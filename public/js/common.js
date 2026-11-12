@@ -101,7 +101,7 @@ function duplicateNames(cubes) {
   return new Set(Object.keys(count).filter((k) => count[k] > 1));
 }
 
-/** Name, author, card count, tags and link for a cube. Duplicate names also show the full URL. */
+/** Name, author, card count and link for a cube. Duplicate names also show the full URL. */
 function cubeInfo(cube, dupes) {
   const isDupe = dupes.has(cube.name.trim().toLowerCase());
   const facts = [cube.author ? `by ${cube.author}` : null, cube.cardCount != null ? `${cube.cardCount} cards` : null].filter(Boolean);
@@ -111,8 +111,6 @@ function cubeInfo(cube, dupes) {
       h('span', { class: 'font-semibold text-slate-50 break-words' }, cube.name),
       isDupe && h('span', { class: 'rounded bg-amber-500/20 px-1.5 py-0.5 text-[11px] font-medium text-amber-300' }, 'same name as another cube')),
     facts.length > 0 && h('div', { class: 'text-sm text-slate-300' }, facts.join(' · ')),
-    cube.tags && cube.tags.length > 0 && h('div', { class: 'mt-1 flex flex-wrap gap-1' },
-      cube.tags.map((t) => h('span', { class: 'rounded-full bg-slate-700 px-2 py-0.5 text-[11px] text-slate-200' }, t))),
     cube.url && h('a', { href: cube.url, target: '_blank', rel: 'noopener noreferrer', class: `mt-1 block break-all text-xs text-sky-400 hover:underline` },
       isDupe ? shortUrl : 'View on Cube Cobra'));
 }

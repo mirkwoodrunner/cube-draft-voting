@@ -4,10 +4,19 @@ Ranked-choice voting and pod assignment for Magic: The Gathering cube drafts.
 
 ## How it works
 
-1. **Admin** opens `/`, enters a title and one or more Cube Cobra URLs with min/max players per cube. Name, author, card count and tags are fetched from Cube Cobra and can be corrected before saving.
+1. **Admin** opens `/`, enters a title and one or more Cube Cobra URLs with min/max players per cube. Name, author and card count are fetched from Cube Cobra and can be corrected before saving.
 2. The admin gets two links: `/admin/:adminToken` (private) and `/vote/:sessionId` (share with players).
 3. **Players** drag cubes into order (a random starting order per player), enter a name and submit. Revisiting the link in the same browser loads their ballot so they can change it until voting closes.
 4. The admin dashboard shows live vote counts. **Close Voting** locks ballots, then **Assign pods** runs the Borda engine and shows pods, rosters, unassigned players and group happiness.
+
+### Admin tools
+
+- **Vote from the dashboard.** Tick "I am playing in this draft" to rank the cubes without opening the player link. Untick it to remove your vote.
+- **Remove a voter.** Each name on the dashboard has a ✕ that deletes that vote.
+- **Edit cubes.** Add, remove or change cubes at any time. Removed cubes drop out of every ballot and new cubes are added at the bottom of every ballot.
+- **Reopen voting.** Goes back to open after closing or assigning.
+
+Changing the cubes or removing a vote after pods were assigned clears the assignment.
 
 ## Assignment engine (`src/borda.js`)
 

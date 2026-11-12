@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * Cube Cobra lookup. Pulls Name, Author, Card Count and Tags for a cube.
+ * Cube Cobra lookup. Pulls Name, Author and Card Count for a cube.
  *
  * Cube Cobra has no officially versioned API for this, so two sources are
  * tried and merged: the public cube JSON endpoint, then the overview page
@@ -79,18 +79,6 @@ function pickCardCount(c) {
   return null;
 }
 
-function pickTags(c) {
-  let tags = c.tags;
-  if (typeof tags === 'string') tags = tags.split(',');
-  if (!Array.isArray(tags)) return [];
-  const out = [];
-  for (const t of tags) {
-    const s = str(typeof t === 'object' && t ? t.name || t.tag : t);
-    if (s && !out.includes(s)) out.push(s);
-  }
-  return out;
-}
-
 function looksLikeCube(o) {
   return (
     o && typeof o === 'object' && !Array.isArray(o) && typeof o.name === 'string' &&
@@ -122,8 +110,7 @@ function extractFromJson(json) {
   return {
     name: str(c.name),
     author: pickAuthor(c),
-    cardCount: pickCardCount(c),
-    tags: pickTags(c)
+    cardCount: pickCardCount(c)
   };
 }
 
@@ -176,7 +163,7 @@ function extractFromHtml(html) {
     .replace(/^(Cube\s+)?(Overview|List|Playtest|Analysis|Blog)\s*:\s*/i, '')
     .trim();
   if (!name) return fromProps;
-  return { author: null, cardCount: null, tags: [], ...(fromProps || {}), name };
+  return { author: null, cardCount: null, ...(fromProps || {}), name };
 }
 
 // ---------- network ----------
@@ -220,7 +207,7 @@ async function get(fetchImpl, url, accept) {
 }
 
 /**
- * @returns {Promise<{cubecobraId:string,url:string,name:string,author:string|null,cardCount:number|null,tags:string[]}>}
+ * @returns {Promise<{cubecobraId:string,url:string,name:string,author:string|null,cardCount:number|null}>}
  */
 async function fetchCubeInfo(input, { fetchImpl = fetch, baseUrl = process.env.CUBECOBRA_BASE_URL || DEFAULT_BASE } = {}) {
   const { id, url } = parseCubeUrl(input);
@@ -230,7 +217,7 @@ async function fetchCubeInfo(input, { fetchImpl = fetch, baseUrl = process.env.C
     async () => extractFromHtml(await get(fetchImpl, `${baseUrl}/cube/overview/${enc}`, 'text/html'))
   ];
 
-  const info = { name: null, author: null, cardCount: null, tags: [] };
+  const info = { name: null, author: null, cardCount: null };
   let notFound = null;
   let lastError = null;
   for (const source of sources) {
@@ -240,7 +227,6 @@ async function fetchCubeInfo(input, { fetchImpl = fetch, baseUrl = process.env.C
       info.name = info.name || got.name;
       info.author = info.author || got.author;
       if (info.cardCount == null) info.cardCount = got.cardCount;
-      if (!info.tags.length) info.tags = got.tags || [];
     } catch (err) {
       if (err instanceof CubeCobraError && err.status === 404) notFound = err;
       lastError = err;

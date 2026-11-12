@@ -11,8 +11,6 @@
     return showError(app, err.status === 404 ? 'This voting link is not valid.' : err.message);
   }
   const { session, cubes } = data;
-  const byId = new Map(cubes.map((c) => [String(c.id), c]));
-  const dupes = duplicateNames(cubes);
   const saved = store.get(key) || {};
 
   // A returning player gets their saved order back. A new player gets a random one.
@@ -23,7 +21,7 @@
     try {
       const { ballot } = await api(`/sessions/${encodeURIComponent(sessionId)}/ballot`, { headers: { 'X-Voter-Token': saved.token } });
       if (ballot) {
-        order = ballot.preferences.map(String).filter((id) => byId.has(id));
+        order = orderFromBallot(cubes, ballot.preferences);
         name = ballot.playerName;
         hasBallot = true;
       }
@@ -31,35 +29,11 @@
   }
 
   const closed = session.status !== 'open';
-  const list = h('ol', { class: 'space-y-2', 'aria-label': 'Cubes in order of preference' });
+  const ranking = rankList(cubes, order, { disabled: closed });
+  const list = ranking.list;
   const nameInput = h('input', { id: 'name', required: true, maxlength: 40, value: name, disabled: closed, placeholder: 'Your name', autocomplete: 'name', class: 'mt-1 w-full rounded-lg bg-slate-900 px-3 py-2 ring-1 ring-slate-600 focus:outline-none focus:ring-emerald-500 disabled:opacity-60' });
   const msg = h('div', { class: 'hidden rounded-xl p-3 text-sm', role: 'status' });
   const saveBtn = h('button', { class: 'w-full rounded-xl bg-emerald-600 px-4 py-3 text-lg font-semibold text-white hover:bg-emerald-500 disabled:opacity-50', disabled: closed }, hasBallot ? 'Update my vote' : 'Submit my vote');
-
-  function renumber() {
-    [...list.children].forEach((li, i) => {
-      li.querySelector('[data-rank]').textContent = i + 1;
-      li.querySelector('[data-up]').disabled = i === 0;
-      li.querySelector('[data-down]').disabled = i === list.children.length - 1;
-    });
-  }
-  const arrow = (label, attr, glyph, delta) => h('button', {
-    type: 'button', 'aria-label': label, [attr]: true, disabled: closed,
-    class: 'flex h-8 w-9 items-center justify-center rounded bg-slate-700 text-slate-100 hover:bg-slate-600 disabled:opacity-30',
-    onclick: (e) => { moveItem(e.currentTarget.closest('li'), delta); renumber(); }
-  }, glyph);
-
-  for (const id of order) {
-    const cube = byId.get(id);
-    list.append(h('li', { dataset: { id }, class: 'flex items-center gap-3 rounded-xl bg-slate-800 p-3 ring-1 ring-slate-700' },
-      h('span', { 'data-rank': true, class: 'flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-emerald-600 text-lg font-bold' }),
-      h('div', { class: 'min-w-0 flex-1' }, cubeInfo(cube, dupes)),
-      h('div', { class: 'flex shrink-0 items-center gap-2' },
-        h('div', { class: 'flex flex-col gap-1' }, arrow('Move up', 'data-up', '▲', -1), arrow('Move down', 'data-down', '▼', 1)),
-        !closed && h('div', { 'data-handle': true, title: 'Drag to reorder', 'aria-hidden': 'true', class: 'flex h-[4.5rem] w-10 items-center justify-center rounded-lg bg-slate-700 text-2xl leading-none text-slate-300 hover:bg-slate-600' }, '⠿'))));
-  }
-  if (!closed) makeSortable(list, renumber);
-  renumber();
 
   function notice(kind, text) {
     msg.className = `rounded-xl p-3 text-sm ring-1 ${kind === 'ok' ? 'bg-emerald-900/40 text-emerald-200 ring-emerald-700' : 'bg-red-900/40 text-red-200 ring-red-700'}`;
@@ -74,7 +48,7 @@
         method: 'POST',
         body: {
           playerName: nameInput.value,
-          preferences: [...list.children].map((li) => li.dataset.id),
+          preferences: ranking.getOrder(),
           voterToken: saved.token || undefined
         }
       });
@@ -88,7 +62,7 @@
     } catch (err) {
       notice('err', err.message);
       if (err.code === 'closed') {
-        list.querySelectorAll('button').forEach((b) => { b.disabled = true; });
+        ranking.lock();
         return;
       }
     }
