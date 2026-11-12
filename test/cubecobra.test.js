@@ -19,20 +19,20 @@ test('parseCubeUrl rejects other hosts, lookalikes and junk', () => {
   }
 });
 
-test('extractFromJson reads owner objects, strings, card arrays and tags', () => {
+test('extractFromJson reads owner objects, strings and card arrays', () => {
   assert.deepStrictEqual(
     extractFromJson({ name: 'Vintage', owner: { username: 'bob' }, cardCount: 540, tags: ['Powered', 'Vintage'] }),
-    { name: 'Vintage', author: 'bob', cardCount: 540, tags: ['Powered', 'Vintage'] });
+    { name: 'Vintage', author: 'bob', cardCount: 540 });
   assert.deepStrictEqual(
     extractFromJson({ name: 'Mini', owner: 'amy', cards: { mainboard: [{}, {}, {}] }, tags: 'a, b' }),
-    { name: 'Mini', author: 'amy', cardCount: 3, tags: ['a', 'b'] });
+    { name: 'Mini', author: 'amy', cardCount: 3 });
   assert.strictEqual(extractFromJson({ cube: { name: 'Nested', owner: { name: 'z' }, cardCount: 360 } }).author, 'z');
   assert.strictEqual(extractFromJson({ unrelated: true }), null);
 });
 
 test('extractFromHtml reads window.reactProps, including braces inside strings', () => {
   const html = `<html><script>window.reactProps = {"cube":{"name":"Odd {name}","owner":{"username":"al"},"cardCount":360,"tags":["x"]},"s":"}\\"{"};</script></html>`;
-  assert.deepStrictEqual(extractFromHtml(html), { name: 'Odd {name}', author: 'al', cardCount: 360, tags: ['x'] });
+  assert.deepStrictEqual(extractFromHtml(html), { name: 'Odd {name}', author: 'al', cardCount: 360 });
 });
 
 test('extractFromHtml falls back to the page title for the name only', () => {
@@ -47,7 +47,7 @@ test('fetchCubeInfo merges sources and reports not-found', async () => {
     return new Response('<script>window.reactProps = {"cube":{"name":"Cube A","owner":{"username":"sam"},"tags":["t"]}}</script>', { status: 200 });
   };
   const info = await fetchCubeInfo('https://cubecobra.com/cube/overview/abc', { fetchImpl: fakeFetch, baseUrl: 'http://x' });
-  assert.deepStrictEqual(info, { cubecobraId: 'abc', url: 'https://cubecobra.com/cube/overview/abc', name: 'Cube A', author: 'sam', cardCount: 360, tags: ['t'] });
+  assert.deepStrictEqual(info, { cubecobraId: 'abc', url: 'https://cubecobra.com/cube/overview/abc', name: 'Cube A', author: 'sam', cardCount: 360 });
 
   const missing = async () => new Response('nope', { status: 404 });
   await assert.rejects(fetchCubeInfo('abc', { fetchImpl: missing, baseUrl: 'http://x' }), /not found/i);

@@ -31,7 +31,6 @@ const cubeDto = (c) => ({
   author: c.author,
   url: c.url,
   cardCount: c.card_count,
-  tags: c.tags || [],
   minPlayers: c.min_players,
   maxPlayers: c.max_players
 });
@@ -96,11 +95,7 @@ async function resolveCube(input, index) {
     info = {
       name: cleanText(input.name, 200, `${label} name`, { required: true }),
       author: cleanText(input.author, 100, `${label} author`),
-      cardCount: Number.isInteger(count) && count >= 0 && count <= 100000 ? count : null,
-      tags: (Array.isArray(input.tags) ? input.tags : [])
-        .map((t) => cleanText(t, 60, `${label} tag`))
-        .filter(Boolean)
-        .slice(0, 30)
+      cardCount: Number.isInteger(count) && count >= 0 && count <= 100000 ? count : null
     };
   } else {
     try {
@@ -150,9 +145,9 @@ router.post('/sessions', wrap(async (req, res) => {
     );
     for (const c of cubes) {
       await client.query(
-        `INSERT INTO cubes (session_id, name, url, cubecobra_id, author, card_count, tags, min_players, max_players)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-        [rows[0].id, c.name, c.url, c.cubecobraId, c.author, c.cardCount, JSON.stringify(c.tags), c.minPlayers, c.maxPlayers]
+        `INSERT INTO cubes (session_id, name, url, cubecobra_id, author, card_count, min_players, max_players)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        [rows[0].id, c.name, c.url, c.cubecobraId, c.author, c.cardCount, c.minPlayers, c.maxPlayers]
       );
     }
     await client.query('COMMIT');
@@ -193,12 +188,12 @@ router.get('/sessions/:sessionId/ballot', wrap(async (req, res) => {
   res.json({ ballot: rows[0] ? { playerName: rows[0].player_name, preferences: rows[0].preferences } : null });
 }));
 
-router.post('/sessions/:sessionId/vote', wrap(async (req, res) => {
-  const playerName = cleanText(req.body.playerName, 40, 'Name', { required: true });
-  const prefs = req.body.preferences;
-  const voterToken = typeof req.body.voterToken === 'string' ? req.body.voterToken : null;
-
-  const s = await sessionByPublicId(req.params.sessionId);
+/**
+ * Saves or updates one ballot. `voterToken` is the edit token the caller holds.
+ * `insertToken` (admin only) is the token to store when this is a new ballot,
+ * instead of issuing a random one.
+ */
+async function saveBallot(s, playerName, prefs, voterToken, insertToken = null) {
   const cubes = await loadCubes(s.id);
   const cubeIds = cubes.map((c) => String(c.id));
   const ranked = Array.isArray(prefs) ? prefs.map(String) : [];
@@ -210,9 +205,15 @@ router.post('/sessions/:sessionId/vote', wrap(async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    // Holds off a concurrent "Close Voting" until this ballot is saved.
+    // Holds off a concurrent "Close Voting" or cube edit until this ballot is saved.
     const { rows: st } = await client.query('SELECT status FROM sessions WHERE id = $1 FOR SHARE', [s.id]);
     if (st[0].status !== 'open') throw new HttpError(403, 'Voting is closed for this session', 'closed');
+
+    // The cube list may have changed since it was read above.
+    const { rows: now } = await client.query('SELECT id FROM cubes WHERE session_id = $1', [s.id]);
+    if (now.length !== cubeIds.length || !now.every((c) => cubeIds.includes(String(c.id)))) {
+      throw new HttpError(409, 'The cubes for this session just changed. Reload the page and rank them again.', 'cubes_changed');
+    }
 
     const nameTaken = () => new HttpError(409, 'Someone has already voted under that name. Pick a different name.', 'name_taken');
     const prefsJson = JSON.stringify(preferences);
@@ -235,7 +236,7 @@ router.post('/sessions/:sessionId/vote', wrap(async (req, res) => {
 
     const isUpdate = issued !== null;
     if (!isUpdate) {
-      issued = newToken(24);
+      issued = insertToken || newToken(24);
       const inserted = await client.query(
         `INSERT INTO votes (session_id, player_name, preferences, token_hash)
          VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING RETURNING id`,
@@ -244,21 +245,32 @@ router.post('/sessions/:sessionId/vote', wrap(async (req, res) => {
       if (!inserted.rowCount) throw nameTaken();
     }
     await client.query('COMMIT');
-    res.json({ success: true, voterToken: issued, updated: isUpdate });
+    return { success: true, voterToken: issued, updated: isUpdate };
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
     throw err;
   } finally {
     client.release();
   }
+}
+
+router.post('/sessions/:sessionId/vote', wrap(async (req, res) => {
+  const playerName = cleanText(req.body.playerName, 40, 'Name', { required: true });
+  const voterToken = typeof req.body.voterToken === 'string' ? req.body.voterToken : null;
+  const s = await sessionByPublicId(req.params.sessionId);
+  res.json(await saveBallot(s, playerName, req.body.preferences, voterToken));
 }));
 
 // ---------- admin dashboard ----------
 
+// The admin's own ballot is keyed to their admin token, so no separate player link is needed.
+const adminVoterToken = (adminToken) => `admin:${adminToken}`;
+
 async function adminView(s) {
   const cubes = await loadCubes(s.id);
+  const myHash = sha256(adminVoterToken(s.admin_token));
   const { rows: votes } = await pool.query(
-    'SELECT player_name, updated_at FROM votes WHERE session_id = $1 ORDER BY created_at, id',
+    'SELECT id, player_name, updated_at, token_hash FROM votes WHERE session_id = $1 ORDER BY created_at, id',
     [s.id]
   );
   return {
@@ -272,7 +284,7 @@ async function adminView(s) {
     },
     cubes: cubes.map(cubeDto),
     voteCount: votes.length,
-    voters: votes.map((v) => ({ name: v.player_name, updatedAt: v.updated_at })),
+    voters: votes.map((v) => ({ id: v.id, name: v.player_name, updatedAt: v.updated_at, you: v.token_hash === myHash })),
     results: s.results || null
   };
 }
@@ -304,6 +316,128 @@ router.post('/admin/:adminToken/assign', wrap(async (req, res) => {
   };
 
   await pool.query("UPDATE sessions SET results = $2, status = 'assigned', assigned_at = now() WHERE id = $1", [s.id, JSON.stringify(results)]);
+  res.json(await adminView(await sessionByAdminToken(req.params.adminToken)));
+}));
+
+// Wipes computed pods. Used whenever the cubes or the voter list change after an assignment.
+const STALE_RESULTS = "results = NULL, assigned_at = NULL, status = CASE WHEN status = 'assigned' THEN 'closed' ELSE status END";
+
+router.post('/admin/:adminToken/reopen', wrap(async (req, res) => {
+  const s = await sessionByAdminToken(req.params.adminToken);
+  await pool.query(
+    "UPDATE sessions SET status = 'open', closed_at = NULL, results = NULL, assigned_at = NULL WHERE id = $1",
+    [s.id]
+  );
+  res.json(await adminView(await sessionByAdminToken(req.params.adminToken)));
+}));
+
+router.delete('/admin/:adminToken/voters/:voteId', wrap(async (req, res) => {
+  const s = await sessionByAdminToken(req.params.adminToken);
+  const voteId = Number(req.params.voteId);
+  if (!Number.isInteger(voteId)) throw new HttpError(400, 'Invalid voter');
+  const del = await pool.query('DELETE FROM votes WHERE id = $1 AND session_id = $2', [voteId, s.id]);
+  if (del.rowCount) await pool.query(`UPDATE sessions SET ${STALE_RESULTS} WHERE id = $1`, [s.id]);
+  res.json(await adminView(await sessionByAdminToken(req.params.adminToken)));
+}));
+
+// ---------- admin as a player ----------
+
+router.get('/admin/:adminToken/ballot', wrap(async (req, res) => {
+  const s = await sessionByAdminToken(req.params.adminToken);
+  const { rows } = await pool.query(
+    'SELECT player_name, preferences FROM votes WHERE session_id = $1 AND token_hash = $2',
+    [s.id, sha256(adminVoterToken(s.admin_token))]
+  );
+  res.json({ ballot: rows[0] ? { playerName: rows[0].player_name, preferences: rows[0].preferences } : null });
+}));
+
+router.post('/admin/:adminToken/vote', wrap(async (req, res) => {
+  const playerName = cleanText(req.body.playerName, 40, 'Name', { required: true });
+  const s = await sessionByAdminToken(req.params.adminToken);
+  const token = adminVoterToken(s.admin_token);
+  const out = await saveBallot(s, playerName, req.body.preferences, token, token);
+  res.json({ success: true, updated: out.updated });
+}));
+
+// "I'm not playing": removes the admin's ballot if there is one.
+router.delete('/admin/:adminToken/ballot', wrap(async (req, res) => {
+  const s = await sessionByAdminToken(req.params.adminToken);
+  const del = await pool.query('DELETE FROM votes WHERE session_id = $1 AND token_hash = $2', [s.id, sha256(adminVoterToken(s.admin_token))]);
+  if (del.rowCount) await pool.query(`UPDATE sessions SET ${STALE_RESULTS} WHERE id = $1`, [s.id]);
+  res.json(await adminView(await sessionByAdminToken(req.params.adminToken)));
+}));
+
+// ---------- admin edits the cube list ----------
+
+/**
+ * Replaces the session's cubes with the submitted list. Entries with an `id`
+ * update that cube, entries without one are added, and cubes left out are
+ * removed. Ballots are fixed up to match: removed cubes drop out of every
+ * ranking, and new cubes are appended to the bottom of every ranking.
+ */
+router.put('/admin/:adminToken/cubes', wrap(async (req, res) => {
+  const s = await sessionByAdminToken(req.params.adminToken);
+  const input = req.body.cubes;
+  if (!Array.isArray(input) || input.length < 1) throw new HttpError(400, 'A session needs at least one cube');
+  if (input.length > MAX_CUBES) throw new HttpError(400, `A session can have at most ${MAX_CUBES} cubes`);
+
+  const cubes = await Promise.all(input.map(resolveCube));
+  const seen = new Set();
+  for (const c of cubes) {
+    if (seen.has(c.cubecobraId)) throw new HttpError(400, `The cube "${c.name}" was added more than once`);
+    seen.add(c.cubecobraId);
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('SELECT id FROM sessions WHERE id = $1 FOR UPDATE', [s.id]);
+    const { rows: existing } = await client.query('SELECT id FROM cubes WHERE session_id = $1', [s.id]);
+    const existingIds = new Set(existing.map((c) => c.id));
+
+    const keep = new Set();
+    const added = [];
+    for (let i = 0; i < cubes.length; i++) {
+      const c = cubes[i];
+      const id = input[i].id === undefined || input[i].id === null ? null : Number(input[i].id);
+      if (id !== null && !existingIds.has(id)) throw new HttpError(409, 'The cube list changed in another window. Reload and try again.');
+      if (id !== null && keep.has(id)) throw new HttpError(400, 'A cube was listed twice');
+      if (id !== null) {
+        keep.add(id);
+        await client.query(
+          `UPDATE cubes SET name = $2, url = $3, cubecobra_id = $4, author = $5, card_count = $6, min_players = $7, max_players = $8
+           WHERE id = $1`,
+          [id, c.name, c.url, c.cubecobraId, c.author, c.cardCount, c.minPlayers, c.maxPlayers]
+        );
+      } else {
+        const { rows } = await client.query(
+          `INSERT INTO cubes (session_id, name, url, cubecobra_id, author, card_count, min_players, max_players)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
+          [s.id, c.name, c.url, c.cubecobraId, c.author, c.cardCount, c.minPlayers, c.maxPlayers]
+        );
+        added.push(rows[0].id);
+      }
+    }
+
+    const removed = [...existingIds].filter((id) => !keep.has(id));
+    if (removed.length) await client.query('DELETE FROM cubes WHERE id = ANY($1::int[])', [removed]);
+
+    if (removed.length || added.length) {
+      const { rows: votes } = await client.query('SELECT id, preferences FROM votes WHERE session_id = $1', [s.id]);
+      const gone = new Set(removed);
+      for (const v of votes) {
+        const prefs = [...v.preferences.filter((id) => !gone.has(id)), ...added];
+        await client.query('UPDATE votes SET preferences = $2 WHERE id = $1', [v.id, JSON.stringify(prefs)]);
+      }
+      await client.query(`UPDATE sessions SET ${STALE_RESULTS} WHERE id = $1`, [s.id]);
+    }
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
   res.json(await adminView(await sessionByAdminToken(req.params.adminToken)));
 }));
 
