@@ -1,0 +1,16 @@
+{
+  "name": "cube-draft-voting",
+  "version": "1.0.0",
+  "description": "Ranked voting and assignment web app for MTG draft cubes",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "pg": "^8.11.3"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
