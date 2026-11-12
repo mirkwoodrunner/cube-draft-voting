@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="/style.css">
+  <title>Create a Cube Draft</title>
+</head>
+<body class="min-h-screen bg-slate-900 p-4 text-slate-100">
+  <main class="mx-auto max-w-2xl py-6">
+    <h1 class="text-3xl font-bold text-emerald-400">Cube Draft Voting</h1>
+    <p class="mb-6 mt-1 text-slate-400">Set up a session, share the voting link, then let ranked votes sort everyone into pods.</p>
+
+    <form id="form" class="space-y-5">
+      <section class="rounded-2xl bg-slate-800 p-5 ring-1 ring-slate-700">
+        <label for="title" class="block text-sm font-medium text-slate-200">Session title</label>
+        <input id="title" required maxlength="120" placeholder="Friday Night Cube Draft" class="mt-1 w-full rounded-lg bg-slate-900 px-3 py-2 ring-1 ring-slate-600 focus:outline-none focus:ring-emerald-500">
+      </section>
+
+      <section class="space-y-3">
+        <h2 class="text-lg font-semibold">Cubes</h2>
+        <div id="cubes" class="space-y-3"></div>
+        <button type="button" id="add" class="rounded-lg bg-slate-700 px-4 py-2 text-sm font-medium hover:bg-slate-600">+ Add another cube</button>
+      </section>
+
+      <div id="error" class="hidden rounded-xl bg-red-900/40 p-3 text-sm text-red-200 ring-1 ring-red-700" role="alert"></div>
+      <button id="submit" class="w-full rounded-xl bg-emerald-600 px-4 py-3 text-lg font-semibold text-white hover:bg-emerald-500 disabled:opacity-50">Create session</button>
+    </form>
+
+    <section id="done" class="hidden space-y-4 rounded-2xl bg-slate-800 p-5 ring-1 ring-slate-700">
+      <h2 class="text-xl font-semibold text-emerald-400">Session created</h2>
+      <div id="links" class="space-y-3"></div>
+      <p class="rounded-lg bg-amber-500/10 p-3 text-sm text-amber-200 ring-1 ring-amber-500/30">Save the admin link now. Anyone who has it can close voting and run the assignment, and it can't be recovered if you lose it.</p>
+      <div class="flex flex-wrap gap-2">
+        <a id="open-admin" class="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold hover:bg-emerald-500">Open admin dashboard</a>
+        <a href="/" class="rounded-lg bg-slate-700 px-4 py-2 text-sm font-medium hover:bg-slate-600">Create another</a>
+      </div>
+    </section>
+  </main>
+  <script src="/js/common.js"></script>
+  <script src="/js/create.js"></script>
+</body>
+</html>

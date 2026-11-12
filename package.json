@@ -4,7 +4,8 @@
   "description": "Ranked voting and assignment web app for MTG draft cubes",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node --test test/*.test.js"
   },
   "dependencies": {
     "express": "^4.19.2",
