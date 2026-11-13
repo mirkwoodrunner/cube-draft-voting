@@ -75,6 +75,25 @@ async function migrate() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
       last_used_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
+
+    -- players who log in with Discord. Their records come from the drafts they played.
+    CREATE TABLE IF NOT EXISTS players (
+      id SERIAL PRIMARY KEY,
+      discord_id TEXT NOT NULL UNIQUE,
+      username TEXT NOT NULL,
+      display_name TEXT NOT NULL,
+      avatar TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      last_login_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    CREATE TABLE IF NOT EXISTS player_logins (
+      token_hash TEXT PRIMARY KEY,
+      player_id INT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      expires_at TIMESTAMPTZ NOT NULL
+    );
+    ALTER TABLE votes ADD COLUMN IF NOT EXISTS player_id INT REFERENCES players(id) ON DELETE SET NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS votes_session_player_idx ON votes(session_id, player_id) WHERE player_id IS NOT NULL;
   `);
 }
 

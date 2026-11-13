@@ -4,6 +4,7 @@ const path = require('path');
 const express = require('express');
 const { pool, migrate } = require('./src/db');
 const { router } = require('./src/routes');
+const discord = require('./src/discord');
 
 const app = express();
 app.disable('x-powered-by');
@@ -20,6 +21,13 @@ app.get('/', page('index.html'));
 app.get('/vote/:sessionId', page('vote.html'));
 app.get('/admin/:adminToken', page('admin.html'));
 app.get('/owner', page('owner.html'));
+app.get('/players', page('players.html'));
+app.get('/players/:id', page('player.html'));
+
+// Discord login. Off unless DISCORD_CLIENT_ID and DISCORD_CLIENT_SECRET are set.
+const authOff = (req, res) => res.status(404).type('text').send('Discord login is turned off on this server');
+app.get('/auth/discord', (req, res) => (discord.enabled() ? discord.start(req, res) : authOff(req, res)));
+app.get('/auth/discord/callback', (req, res, next) => (discord.enabled() ? discord.callback(req, res).catch(next) : authOff(req, res)));
 app.use((req, res) => res.status(404).type('text').send('Not found'));
 
 const PORT = process.env.PORT || 3000;

@@ -12,14 +12,15 @@
   }
   const { session, cubes } = data;
   const saved = store.get(key) || {};
+  const [me, bar] = await Promise.all([getMe(), accountBar()]);
 
   // A returning player gets their saved order back. A new player gets a random one.
   let order = shuffle(cubes.map((c) => String(c.id)));
   let name = '';
   let hasBallot = false;
-  if (saved.token) {
+  if (saved.token || me.player) {
     try {
-      const { ballot } = await api(`/sessions/${encodeURIComponent(sessionId)}/ballot`, { headers: { 'X-Voter-Token': saved.token } });
+      const { ballot } = await api(`/sessions/${encodeURIComponent(sessionId)}/ballot`, { headers: saved.token ? { 'X-Voter-Token': saved.token } : {} });
       if (ballot) {
         order = orderFromBallot(cubes, ballot.preferences);
         name = ballot.playerName;
@@ -28,6 +29,7 @@
     } catch { /* fall back to a fresh ballot */ }
   }
 
+  if (!name && me.player) name = me.player.name;
   const closed = session.status !== 'open';
   const ranking = rankList(cubes, order, { disabled: closed });
   const list = ranking.list;
@@ -52,13 +54,15 @@
           voterToken: saved.token || undefined
         }
       });
-      saved.token = out.voterToken;
+      if (out.voterToken) saved.token = out.voterToken;
       store.set(key, saved);
       hasBallot = true;
       saveBtn.textContent = 'Update my vote';
       notice('ok', out.updated
         ? 'Your vote was updated.'
-        : 'Your vote is saved. Come back to this link any time before voting closes to change it. Use the same browser.');
+        : me.player
+          ? 'Your vote is saved to your Discord login. Come back to this link any time before voting closes to change it.'
+          : 'Your vote is saved. Come back to this link any time before voting closes to change it. Use the same browser.');
     } catch (err) {
       notice('err', err.message);
       if (err.code === 'closed') {
@@ -70,13 +74,17 @@
   } },
     h('div', null,
       h('label', { for: 'name', class: 'block text-sm font-medium text-slate-200' }, 'Your name'),
-      nameInput),
+      nameInput,
+      me.enabled && h('p', { class: 'mt-1 text-xs text-slate-400' }, me.player
+        ? 'Your pod and match results from this draft will be added to your player record.'
+        : 'You can vote without logging in. Log in with Discord to keep a record of your drafts and results.')),
     h('div', null,
       h('h2', { class: 'text-lg font-semibold' }, 'Rank the cubes'),
       h('p', { class: 'text-sm text-slate-400' }, 'Put the cube you most want to draft at the top. Drag the handle, or use the arrows.')),
     list, msg, saveBtn);
 
   app.replaceChildren(
+    bar,
     h('h1', { class: 'text-2xl font-bold text-emerald-400' }, session.title),
     h('p', { class: 'mb-5 mt-1 text-slate-400' }, closed ? 'Voting is closed.' : hasBallot ? 'You have already voted. You can change your vote below until voting closes.' : 'Rank every cube from your favorite to your least favorite.'),
     closed ? h('div', { class: 'mb-4 rounded-xl bg-amber-500/10 p-3 text-sm text-amber-200 ring-1 ring-amber-500/30' }, 'Voting has closed, so ballots can no longer be changed.') : '',
