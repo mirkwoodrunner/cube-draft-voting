@@ -19,6 +19,7 @@ const page = (file) => (req, res) => {
 app.get('/', page('index.html'));
 app.get('/vote/:sessionId', page('vote.html'));
 app.get('/admin/:adminToken', page('admin.html'));
+app.get('/owner', page('owner.html'));
 app.use((req, res) => res.status(404).type('text').send('Not found'));
 
 const PORT = process.env.PORT || 3000;

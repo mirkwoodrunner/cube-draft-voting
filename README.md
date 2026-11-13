@@ -16,7 +16,29 @@ Ranked-choice voting and pod assignment for Magic: The Gathering cube drafts.
 - **Edit cubes.** Add, remove or change cubes at any time. Removed cubes drop out of every ballot and new cubes are added at the bottom of every ballot.
 - **Reopen voting.** Goes back to open after closing or assigning.
 
-Changing the cubes or removing a vote after pods were assigned clears the assignment.
+- **Edit pods.** After assigning, use "Move to" on any player to put them in another pod, a cube that did not fire, or out of the pods. Pods outside their min/max are flagged, not blocked.
+- **Match results.** Each pod has a match list. Add a match with two players, a round and the games won. Leave scores blank to add a pairing now and fill it in later. Standings use 3 points for a match win and 1 for a draw.
+- **Ballots.** Every voter's full ranking is listed under Ballots.
+
+Changing the cubes or removing a vote after pods were assigned clears the assignment, including any pod edits and match results. Re-running the assignment or reopening voting does the same. The dashboard warns before each of these.
+
+### Team draft
+
+Tick **Team draft** when creating a session, or switch the format on the dashboard. Each pod is split at random into two teams of equal size (one larger if the pod is odd). Each team drafts at its own table, and matches are only allowed between the two teams.
+
+- **Generate pairings** builds rounds where every player meets a different opponent from the other team each round. With uneven teams the extra player sits out one round.
+- The team button on a player moves them to the other team.
+- The pod shows a team score: match wins, with a drawn match worth half to each side.
+
+Switching the format after pods are assigned re-splits or removes the teams and clears that draft's matches.
+
+### Cube library
+
+Every cube has a "Save to my cube library" box, ticked by default. Saved cubes show up in an "Add a saved cube" picker on the create page and the cube editor. Saving the same cube again updates its saved details. Only the owner can remove cubes from the library.
+
+### Owner page
+
+Set `ADMIN_PASSWORD` and log in at `/owner`. It lists every draft ever made, newest first, with votes, pods and match result counts, and opens any draft's admin dashboard even if its admin link was lost. It also manages the cube library. The login lasts 30 days in that browser. Changing the password logs everyone out.
 
 ## Assignment engine (`src/borda.js`)
 
@@ -42,6 +64,7 @@ Tables are created or upgraded automatically on startup. Existing sessions from 
 | --- | --- |
 | `DATABASE_URL` | Postgres connection string (required) |
 | `PORT` | Defaults to 3000 |
+| `ADMIN_PASSWORD` | Turns on the owner page at `/owner`. Off when unset |
 | `CUBECOBRA_BASE_URL` | Override for tests. Defaults to `https://cubecobra.com` |
 
 ## Layout
@@ -51,4 +74,6 @@ Tables are created or upgraded automatically on startup. Existing sessions from 
 - `src/routes.js` API
 - `src/cubecobra.js` Cube Cobra scraper
 - `src/borda.js` assignment engine
+- `src/pods.js` pod edits, teams, matches and standings
+- `src/owner.js` owner login
 - `public/` Tailwind pages and scripts
