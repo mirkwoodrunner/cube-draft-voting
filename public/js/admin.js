@@ -6,7 +6,6 @@
   let timer = null;
   let busy = false;
 
-  const pct = (x) => `${Math.round(x * 100)}%`;
   const card = (...kids) => h('section', { class: 'space-y-3 rounded-2xl bg-slate-800 p-5 ring-1 ring-slate-700' }, ...kids);
   const STATUS = { open: ['Voting open', 'bg-emerald-600'], closed: ['Voting closed', 'bg-amber-600'], assigned: ['Pods assigned', 'bg-sky-600'] };
 
@@ -14,12 +13,14 @@
   const nameKey = `cube-admin-name:${token}`;
   let data = null;
   let editing = false;
+  let library = [];
   let keepVoteForm = false; // set after the admin saves a ballot, so the form and its confirmation stay put
   const keys = {};
   const slots = {
     top: h('div', { class: 'space-y-4' }),
     vote: h('div'),
     cubes: h('div'),
+    ballots: h('div'),
     results: h('div', { class: 'space-y-4' })
   };
 
@@ -41,47 +42,31 @@
     }
   }
 
-  function podCard(pod, dupes) {
-    return card(
-      h('div', { class: 'flex items-start justify-between gap-3' },
-        cubeInfo(pod, dupes),
-        h('div', { class: 'shrink-0 text-right' },
-          h('div', { class: 'text-2xl font-bold text-emerald-400' }, pct(pod.satisfaction)),
-          h('div', { class: 'text-xs text-slate-400' }, `${pod.players.length} players (${pod.minPlayers}-${pod.maxPlayers})`))),
-      h('ul', { class: 'divide-y divide-slate-700' },
-        pod.players.map((p) => h('li', { class: 'flex items-center justify-between py-1.5 text-sm' },
-          h('span', null, p.name),
-          h('span', { class: `rounded-full px-2 py-0.5 text-xs ${p.rank === 1 ? 'bg-emerald-600/30 text-emerald-300' : 'bg-slate-700 text-slate-300'}` }, `${ordinal(p.rank)} choice`)))));
-  }
-
-  function resultsView(results, dupes) {
-    const s = results.stats;
-    const dist = Object.keys(s.rankCounts).map(Number).sort((a, b) => a - b)
-      .map((r) => `${s.rankCounts[r]} got their ${ordinal(r)} choice`).join(' · ');
-    return [
-      card(
-        h('div', { class: 'flex flex-wrap items-end gap-x-6 gap-y-2' },
-          h('div', null,
-            h('div', { class: 'text-xs uppercase tracking-wide text-slate-400' }, 'Group happiness'),
-            h('div', { class: 'text-5xl font-bold text-emerald-400' }, pct(s.groupSatisfaction))),
-          h('div', { class: 'text-sm text-slate-300' },
-            h('div', null, `${s.seated} of ${s.players} players seated in ${results.pods.length} pod${results.pods.length === 1 ? '' : 's'}`),
-            dist && h('div', null, dist))),
-        h('p', { class: 'text-xs text-slate-500' }, '100% means every seated player got their first choice and 0% means every one got their last. Unassigned players are not counted.')),
-      results.pods.map((p) => podCard(p, dupes)),
-      results.unassigned.length > 0 && card(
-        h('h3', { class: 'font-semibold text-amber-300' }, `Unassigned (${results.unassigned.length}) — needs your review`),
-        h('ul', { class: 'divide-y divide-slate-700 text-sm' },
-          results.unassigned.map((u) => h('li', { class: 'py-1.5' }, h('span', { class: 'font-medium' }, u.name), h('span', { class: 'block text-xs text-slate-400' }, u.reason))))),
-      results.notFired.length > 0 && card(
-        h('h3', { class: 'font-semibold text-slate-300' }, 'Cubes that did not fire'),
-        results.notFired.map((c) => h('div', { class: 'rounded-lg bg-slate-900/50 p-3' },
-          cubeInfo(c, dupes),
-          h('p', { class: 'mt-1 text-xs text-slate-400' }, `${c.reason}. ${c.firstChoiceVotes} first-choice vote${c.firstChoiceVotes === 1 ? '' : 's'}.`))))
-    ];
-  }
-
   // ---------- top: links, votes, controls ----------
+
+  /** Extra warning for actions that wipe the pods, naming any match results that go with them. */
+  function wipeWarning(d, what) {
+    if (d.session.status !== 'assigned') return '';
+    const played = ((d.results && d.results.matches) || []).filter((m) => m.w1 !== null && m.w1 !== undefined).length;
+    return ` ${what}${played ? ` and ${played} recorded match result${played === 1 ? '' : 's'}` : ''} will be cleared.`;
+  }
+
+  function formatView(d) {
+    const { session } = d;
+    const label = session.teamMode ? 'Team draft' : 'Regular draft';
+    const hint = session.teamMode
+      ? 'Each pod is split into two teams. Each team drafts at its own table and players only play the other team.'
+      : 'Everyone in a pod drafts together and can play anyone in the pod.';
+    return h('div', { class: 'flex flex-wrap items-center justify-between gap-3 rounded-xl bg-slate-900/60 p-4 ring-1 ring-slate-700' },
+      h('div', { class: 'min-w-0' },
+        h('div', { class: 'text-sm font-semibold' }, `Format: ${label}`),
+        h('div', { class: 'text-xs text-slate-400' }, hint)),
+      smallBtn('bg-slate-700 hover:bg-slate-600', session.teamMode ? 'Switch to regular' : 'Switch to team draft', (e) => {
+        const extra = session.status === 'assigned'
+          ? (session.teamMode ? ' Teams will be removed' : ' Every pod will be split into random teams') + wipeWarning(d, '. All pairings') : '';
+        if (!extra || confirm(`Change the format?${extra}`)) act('/team-mode', e.currentTarget, { method: 'PUT', body: { teamMode: !session.teamMode } });
+      }));
+  }
 
   function topView(d) {
     const { session, voteCount, voters } = d;
@@ -90,12 +75,15 @@
     const plural = `${voteCount} vote${voteCount === 1 ? '' : 's'}`;
 
     return [
+      d.isOwner && h('a', { href: '/owner', class: 'text-sm text-sky-400 hover:underline' }, '← All drafts'),
       h('div', { class: 'flex flex-wrap items-center gap-3' },
         h('h1', { class: 'text-2xl font-bold text-emerald-400' }, session.title),
-        h('span', { class: `rounded-full px-3 py-1 text-xs font-semibold text-white ${statusColor}` }, statusText)),
+        h('span', { class: `rounded-full px-3 py-1 text-xs font-semibold text-white ${statusColor}` }, statusText),
+        session.teamMode && h('span', { class: 'rounded-full bg-violet-600 px-3 py-1 text-xs font-semibold text-white' }, 'Team draft')),
       card(
         linkBox('Player Voting Link', 'Share this with your players.', `/vote/${session.id}`, 'emerald'),
-        linkBox('Admin Dashboard Link', 'Keep this private. It controls the session.', base, 'amber')),
+        linkBox('Admin Dashboard Link', 'Keep this private. It controls the session.', base, 'amber'),
+        formatView(d)),
       card(
         h('div', { class: 'flex items-baseline gap-3' },
           h('div', { class: 'text-5xl font-bold' }, voteCount),
@@ -108,16 +96,19 @@
               type: 'button', 'aria-label': `Remove ${v.name}'s vote`, title: 'Remove this vote',
               class: 'flex h-5 w-5 items-center justify-center rounded-full text-slate-300 hover:bg-red-600 hover:text-white',
               onclick: (e) => {
-                const extra = session.status === 'assigned' ? ' The pod assignment will be cleared and voting set back to closed.' : '';
+                const extra = session.status === 'assigned' ? `${wipeWarning(d, 'The pod assignment')} Voting goes back to closed.` : '';
                 if (confirm(`Remove ${v.name}'s vote?${extra}`)) act(`/voters/${v.id}`, e.currentTarget, { method: 'DELETE' });
               }
             }, '✕')))),
         open && btn('bg-red-600 hover:bg-red-500', 'Close Voting', (e) => {
           if (confirm(`Close voting now? ${plural} so far. Players will no longer be able to vote or change their ballots.`)) act('/close', e.currentTarget);
         }),
-        !open && btn('bg-emerald-600 hover:bg-emerald-500', session.status === 'assigned' ? 'Re-run assignment' : 'Assign pods', (e) => act('/assign', e.currentTarget)),
+        !open && btn('bg-emerald-600 hover:bg-emerald-500', session.status === 'assigned' ? 'Re-run assignment' : 'Assign pods', (e) => {
+          const extra = wipeWarning(d, 'Your pod changes');
+          if (!extra || confirm(`Re-run the assignment from the ballots?${extra}`)) act('/assign', e.currentTarget);
+        }),
         !open && h('button', { class: 'w-full rounded-xl bg-slate-700 px-4 py-2 text-sm font-semibold text-slate-100 hover:bg-slate-600 disabled:opacity-50', onclick: (e) => {
-          const extra = session.status === 'assigned' ? ' The current pod assignment will be cleared.' : '';
+          const extra = wipeWarning(d, 'The current pod assignment');
           if (confirm(`Reopen voting? Players will be able to vote and change their ballots again.${extra}`)) act('/reopen', e.currentTarget);
         } }, 'Reopen voting'))
     ];
@@ -202,7 +193,12 @@
     return card(
       h('div', { class: 'flex items-center justify-between gap-3' },
         h('h2', { class: 'font-semibold' }, `Cubes (${cubes.length})`),
-        smallBtn('bg-slate-700 hover:bg-slate-600', 'Edit cubes', () => { editing = true; drawCubes(); })),
+        smallBtn('bg-slate-700 hover:bg-slate-600', 'Edit cubes', async (e) => {
+          e.currentTarget.disabled = true;
+          library = await loadLibrary();
+          editing = true;
+          drawCubes();
+        })),
       cubes.map((c) => h('div', { class: 'flex items-start justify-between gap-3 rounded-lg bg-slate-900/50 p-3' },
         cubeInfo(c, dupes),
         h('div', { class: 'shrink-0 text-right text-xs text-slate-400' }, `${c.minPlayers}-${c.maxPlayers}`, h('br'), 'players'))));
@@ -211,7 +207,7 @@
   function editorView(d) {
     const { session, cubes } = d;
     const list = h('div', { class: 'space-y-3' });
-    const editor = createCubeEditor(list);
+    const editor = createCubeEditor(list, { savedUrls: new Set(library.map((c) => c.url)) });
     cubes.forEach((c) => editor.add(c));
     const error = h('div', { class: 'hidden rounded-xl bg-red-900/40 p-3 text-sm text-red-200 ring-1 ring-red-700', role: 'alert' });
     const save = h('button', { class: 'rounded-xl bg-emerald-600 px-4 py-2 font-semibold text-white hover:bg-emerald-500 disabled:opacity-50' }, 'Save cubes');
@@ -219,13 +215,14 @@
 
     const notes = [
       'Removing a cube drops it from every ballot. New cubes are added at the bottom of every existing ballot, so ask players to revisit their votes.',
-      session.status === 'assigned' && 'Saving a change clears the current pod assignment.',
+      session.status === 'assigned' && `Adding or removing a cube clears the current pod assignment${(d.results.matches || []).length ? ' and its match results' : ''}.`,
       session.status !== 'open' && 'Voting is not open, so players cannot rerank until you reopen it.'
     ].filter(Boolean);
 
     return card(
       h('h2', { class: 'font-semibold' }, 'Edit cubes'),
       h('ul', { class: 'list-disc space-y-1 pl-5 text-xs text-amber-200' }, notes.map((n) => h('li', null, n))),
+      libraryPicker(library, editor),
       h('form', { class: 'space-y-3', onsubmit: async (e) => {
         e.preventDefault();
         error.classList.add('hidden');
@@ -263,7 +260,7 @@
     const cubeKey = JSON.stringify(cubes);
 
     const topKey = JSON.stringify([session, d.voteCount, voters]);
-    if (topKey !== keys.top) { keys.top = topKey; slots.top.replaceChildren(...topView(d)); }
+    if (topKey !== keys.top) { keys.top = topKey; slots.top.replaceChildren(...topView(d).filter(Boolean)); }
 
     const voteKey = JSON.stringify([session.status, cubeKey, voters.some((v) => v.you)]);
     if (voteKey !== keys.vote) {
@@ -273,10 +270,16 @@
 
     if (!editing && (cubeKey !== keys.cubes || !slots.cubes.firstChild)) { keys.cubes = cubeKey; drawCubes(); }
 
-    const resKey = JSON.stringify([results, cubeKey]);
+    const resKey = JSON.stringify([results, cubeKey, session.teamMode]);
     if (resKey !== keys.results) {
       keys.results = resKey;
-      slots.results.replaceChildren(...(results ? [h('h2', { class: 'pt-2 text-xl font-bold' }, 'Results'), ...resultsView(results, duplicateNames(cubes)).flat(Infinity).filter(Boolean)] : []));
+      slots.results.replaceChildren(...(results ? [h('h2', { class: 'pt-2 text-xl font-bold' }, 'Results'), ...resultsView(d, duplicateNames(cubes), act).flat(Infinity).filter(Boolean)] : []));
+    }
+
+    const ballotKey = JSON.stringify([voters, cubeKey]);
+    if (ballotKey !== keys.ballots) {
+      keys.ballots = ballotKey;
+      slots.ballots.replaceChildren(...[ballotsView(d)].filter(Boolean));
     }
 
     // Poll only while votes can still change.
@@ -289,6 +292,6 @@
     try { render(await api(base)); } catch { /* keep the last view; try again next tick */ }
   }
 
-  app.replaceChildren(slots.top, h('div', { class: 'mt-4 space-y-4' }, slots.vote, slots.cubes, slots.results));
+  app.replaceChildren(slots.top, h('div', { class: 'mt-4 space-y-4' }, slots.vote, slots.cubes, slots.ballots, slots.results));
   api(base).then(render).catch((err) => showError(app, err.status === 404 ? 'This admin link is not valid.' : err.message));
 })();

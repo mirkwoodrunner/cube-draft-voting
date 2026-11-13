@@ -16,10 +16,16 @@
       <section class="rounded-2xl bg-slate-800 p-5 ring-1 ring-slate-700">
         <label for="title" class="block text-sm font-medium text-slate-200">Session title</label>
         <input id="title" required maxlength="120" placeholder="Friday Night Cube Draft" class="mt-1 w-full rounded-lg bg-slate-900 px-3 py-2 ring-1 ring-slate-600 focus:outline-none focus:ring-emerald-500">
+        <label class="mt-4 flex items-start gap-3 text-sm text-slate-200">
+          <input id="team-mode" type="checkbox" class="mt-0.5 h-5 w-5 shrink-0 accent-emerald-500">
+          <span><span class="font-medium">Team draft</span>
+            <span class="block text-xs text-slate-400">Each pod is split into two teams. Each team drafts at its own table, and players only play against the other team. You can change this later.</span></span>
+        </label>
       </section>
 
       <section class="space-y-3">
         <h2 class="text-lg font-semibold">Cubes</h2>
+        <div id="library"></div>
         <div id="cubes" class="space-y-3"></div>
         <button type="button" id="add" class="rounded-lg bg-slate-700 px-4 py-2 text-sm font-medium hover:bg-slate-600">+ Add another cube</button>
       </section>
@@ -31,12 +37,13 @@
     <section id="done" class="hidden space-y-4 rounded-2xl bg-slate-800 p-5 ring-1 ring-slate-700">
       <h2 class="text-xl font-semibold text-emerald-400">Session created</h2>
       <div id="links" class="space-y-3"></div>
-      <p class="rounded-lg bg-amber-500/10 p-3 text-sm text-amber-200 ring-1 ring-amber-500/30">Save the admin link now. Anyone who has it can close voting and run the assignment, and it can't be recovered if you lose it.</p>
+      <p class="rounded-lg bg-amber-500/10 p-3 text-sm text-amber-200 ring-1 ring-amber-500/30">Save the admin link now. Anyone who has it can close voting and run the assignment. If you lose it, the site owner can still open the draft from the owner page.</p>
       <div class="flex flex-wrap gap-2">
         <a id="open-admin" class="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold hover:bg-emerald-500">Open admin dashboard</a>
         <a href="/" class="rounded-lg bg-slate-700 px-4 py-2 text-sm font-medium hover:bg-slate-600">Create another</a>
       </div>
     </section>
+    <p class="mt-8 text-center text-xs text-slate-500"><a href="/owner" class="hover:text-slate-300 hover:underline">Owner login: all drafts and the cube library</a></p>
   </main>
   <script src="/js/common.js"></script>
   <script src="/js/cubeform.js"></script>

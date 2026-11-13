@@ -58,6 +58,23 @@ async function migrate() {
     ALTER TABLE votes ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT now();
     ALTER TABLE votes ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
     CREATE UNIQUE INDEX IF NOT EXISTS votes_session_lower_name_idx ON votes(session_id, lower(player_name));
+
+    -- team draft: pods split into two teams that only play each other
+    ALTER TABLE sessions ADD COLUMN IF NOT EXISTS team_mode BOOLEAN NOT NULL DEFAULT false;
+
+    -- cube library: cubes saved for future sessions
+    CREATE TABLE IF NOT EXISTS saved_cubes (
+      id SERIAL PRIMARY KEY,
+      cubecobra_id TEXT NOT NULL UNIQUE,
+      url TEXT NOT NULL,
+      name TEXT NOT NULL,
+      author TEXT,
+      card_count INT,
+      min_players INT NOT NULL DEFAULT 6,
+      max_players INT NOT NULL DEFAULT 8,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      last_used_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
   `);
 }
 
