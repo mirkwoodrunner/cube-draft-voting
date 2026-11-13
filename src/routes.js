@@ -364,6 +364,18 @@ router.delete('/admin/:adminToken/voters/:voteId', wrap(async (req, res) => {
   const s = await sessionByAdminToken(req.params.adminToken);
   const voteId = Number(req.params.voteId);
   if (!Number.isInteger(voteId)) throw new HttpError(400, 'Invalid voter');
+  // Once pods are assigned, removing a voter takes them out of the pods and keeps everyone else's seats and results.
+  if (s.status === 'assigned' && s.results) {
+    await editResults(s, async (results, row, client) => {
+      const del = await client.query('DELETE FROM votes WHERE id = $1 AND session_id = $2 RETURNING player_name', [voteId, s.id]);
+      if (!del.rowCount) return results;
+      const name = del.rows[0].player_name;
+      const ctx = await podContext(s, row, client);
+      ctx.preferences.set(name, []);
+      return inResults(results, name) ? pods.removePlayer(results, name, ctx) : results;
+    });
+    return sendView(req, res);
+  }
   const del = await pool.query('DELETE FROM votes WHERE id = $1 AND session_id = $2', [voteId, s.id]);
   if (del.rowCount) await pool.query(`UPDATE sessions SET ${STALE_RESULTS} WHERE id = $1`, [s.id]);
   await sendView(req, res);
@@ -515,15 +527,92 @@ router.put('/admin/:adminToken/team-mode', wrap(async (req, res) => {
   await sendView(req, res);
 }));
 
+/** What the pod functions need to know about the session: its cubes, ballots and format. */
+async function podContext(s, row, client) {
+  const cubes = (await loadCubes(s.id, client)).map(cubeDto);
+  const { rows: votes } = await client.query('SELECT player_name, preferences FROM votes WHERE session_id = $1', [s.id]);
+  return {
+    cubes,
+    preferences: new Map(votes.map((v) => [v.player_name, v.preferences])),
+    voterNames: votes.map((v) => v.player_name),
+    teamMode: row.team_mode
+  };
+}
+
+const inResults = (results, name) =>
+  results.pods.some((p) => p.players.some((m) => m.name === name)) || results.unassigned.some((u) => u.name === name);
+const targetCube = (v) => (v === null || v === undefined || v === '' ? null : String(v));
+
 router.post('/admin/:adminToken/pods/move', wrap(async (req, res) => {
   const s = await sessionByAdminToken(req.params.adminToken);
   const name = String(req.body.name || '');
-  const to = req.body.cubeId === null || req.body.cubeId === undefined || req.body.cubeId === '' ? null : String(req.body.cubeId);
+  await editResults(s, async (results, row, client) => pods.movePlayer(results, name, targetCube(req.body.cubeId), await podContext(s, row, client)));
+  await sendView(req, res);
+}));
+
+/**
+ * Renames a player: their ballot if they voted, and their seat and matches if
+ * pods are assigned. Works at any stage of the draft.
+ */
+router.post('/admin/:adminToken/players/rename', wrap(async (req, res) => {
+  const s = await sessionByAdminToken(req.params.adminToken);
+  const from = String(req.body.from || '');
+  const to = cleanText(req.body.to, 40, 'New name', { required: true });
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows } = await client.query('SELECT results FROM sessions WHERE id = $1 FOR UPDATE', [s.id]);
+    const { rows: votes } = await client.query('SELECT id, player_name FROM votes WHERE session_id = $1', [s.id]);
+    const ballot = votes.find((v) => v.player_name === from);
+    const otherVoters = votes.filter((v) => v !== ballot).map((v) => v.player_name);
+    if (otherVoters.some((n) => n.toLowerCase() === to.toLowerCase())) throw new HttpError(409, `${to} is already in this draft`);
+
+    let results = rows[0].results;
+    if (results) {
+      try {
+        results = pods.renamePlayer(results, from, to, otherVoters);
+      } catch (err) {
+        // A voter who isn't in the stored results (voted after pods were assigned) only needs their ballot renamed.
+        if (!(err instanceof pods.PodError) || !ballot || !/is not in this draft/.test(err.message)) {
+          throw err instanceof pods.PodError ? new HttpError(400, err.message) : err;
+        }
+        const names = [...results.pods.flatMap((p) => p.players), ...results.unassigned].map((p) => p.name)
+          .concat((results.matches || []).flatMap((m) => [m.p1, m.p2]));
+        if (names.some((n) => n.toLowerCase() === to.toLowerCase())) {
+          throw new HttpError(409, `${to} is already in this draft`);
+        }
+      }
+      await client.query('UPDATE sessions SET results = $2 WHERE id = $1', [s.id, JSON.stringify(results)]);
+    } else if (!ballot) {
+      throw new HttpError(404, `${from} is not in this draft`);
+    }
+    if (ballot) await client.query('UPDATE votes SET player_name = $2 WHERE id = $1', [ballot.id, to]);
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+  await sendView(req, res);
+}));
+
+// Someone who turned up after voting closed. They go straight into a pod without a ballot.
+router.post('/admin/:adminToken/pods/add', wrap(async (req, res) => {
+  const s = await sessionByAdminToken(req.params.adminToken);
+  const name = cleanText(req.body.name, 40, 'Name', { required: true });
+  await editResults(s, async (results, row, client) => pods.addPlayer(results, name, targetCube(req.body.cubeId), await podContext(s, row, client)));
+  await sendView(req, res);
+}));
+
+// Someone who is not playing after all. Their ballot is deleted too, so a re-run won't seat them again.
+router.post('/admin/:adminToken/pods/remove', wrap(async (req, res) => {
+  const s = await sessionByAdminToken(req.params.adminToken);
+  const name = String(req.body.name || '');
   await editResults(s, async (results, row, client) => {
-    const cubes = (await loadCubes(s.id, client)).map(cubeDto);
-    const { rows: votes } = await client.query('SELECT player_name, preferences FROM votes WHERE session_id = $1', [s.id]);
-    const preferences = new Map(votes.map((v) => [v.player_name, v.preferences]));
-    return pods.movePlayer(results, name, to, { cubes, preferences, teamMode: row.team_mode });
+    const next = pods.removePlayer(results, name, await podContext(s, row, client));
+    await client.query('DELETE FROM votes WHERE session_id = $1 AND player_name = $2', [s.id, name]);
+    return next;
   });
   await sendView(req, res);
 }));
@@ -562,6 +651,13 @@ router.delete('/admin/:adminToken/matches/:matchId', wrap(async (req, res) => {
   const s = await sessionByAdminToken(req.params.adminToken);
   await editResults(s, (results) => pods.deleteMatch(results, req.params.matchId));
   await sendView(req, res);
+}));
+
+// Deletes the whole draft: cubes, ballots, pods and match results. Cubes saved in the library are kept.
+router.delete('/admin/:adminToken', wrap(async (req, res) => {
+  const s = await sessionByAdminToken(req.params.adminToken);
+  await pool.query('DELETE FROM sessions WHERE id = $1', [s.id]);
+  res.json({ success: true });
 }));
 
 // ---------- cube library ----------

@@ -132,3 +132,59 @@ test('moving a player drops only their unplayed pairings in the old pod', () => 
   assert.strictEqual(left.length, 1, 'the recorded result stays');
   assert.notStrictEqual(left[0].w1, null);
 });
+
+test('a late player joins a pod without a ballot and is left out of happiness', () => {
+  const r = pods.addPlayer(base(), 'Eve', '1', ctx());
+  const eve = r.pods.find((p) => p.cubeId === '1').players.find((p) => p.name === 'Eve');
+  assert.deepStrictEqual(eve, { name: 'Eve', rank: null, satisfaction: null, late: true });
+  assert.strictEqual(r.stats.seated, 5);
+  assert.strictEqual(r.stats.groupSatisfaction, 1, 'late joiner does not drag the score down');
+  const moved = pods.movePlayer(r, 'Eve', '2', ctx());
+  assert.ok(moved.pods.find((p) => p.cubeId === '2').players.find((p) => p.name === 'Eve').late, 'stays late after a move');
+});
+
+test('late player names must be new, ignoring case', () => {
+  assert.throws(() => pods.addPlayer(base(), 'ann', '1', ctx()), /already in this draft/);
+  assert.throws(() => pods.addPlayer(base(), 'Zed', '1', { ...ctx(), voterNames: ['zed'] }), /already in this draft/);
+});
+
+test('late player joins the smaller team', () => {
+  let r = pods.setTeamMode(assignPods([cube(1, 2, 8)], ballots.slice(0, 3)), true, seq(0.1, 0.7, 0.3));
+  const sizes = [0, 1].map((t) => r.pods[0].players.filter((p) => p.team === t).length);
+  r = pods.addPlayer(r, 'Eve', '1', { ...ctx(true), cubes: [cube(1, 2, 8)] });
+  assert.strictEqual(r.pods[0].players.find((p) => p.name === 'Eve').team, sizes[0] < sizes[1] ? 0 : 1);
+});
+
+test('removing a player keeps other seats and played results, drops their unplayed pairings', () => {
+  const one = [cube(1, 2, 8)];
+  let r = pods.setTeamMode(assignPods(one, ballots), true, seq(0.1, 0.7, 0.3));
+  r = pods.generateTeamPairings(r, '1', 2);
+  const gone = r.matches[0].p1;
+  r = pods.updateMatch(r, r.matches[0].id, { w1: 2, w2: 0 });
+  r = pods.removePlayer(r, gone, { ...ctx(true), cubes: one });
+  assert.strictEqual(r.stats.players, 3);
+  assert.ok(!r.unassigned.some((u) => u.name === gone));
+  const theirs = r.matches.filter((m) => m.p1 === gone || m.p2 === gone);
+  assert.strictEqual(theirs.length, 1);
+  assert.notStrictEqual(theirs[0].w1, null);
+  assert.strictEqual(r.matches.length, 3);
+  assert.throws(() => pods.addPlayer(r, gone, '1', { ...ctx(true), cubes: one }), /already in this draft/, 'name with a match record stays reserved');
+});
+
+test('renaming updates the seat and every match, and refuses clashes', () => {
+  const one = [cube(1, 2, 8)];
+  let r = pods.setTeamMode(assignPods(one, ballots), true, seq(0.1, 0.7, 0.3));
+  r = pods.generateTeamPairings(r, '1', 2);
+  const who = r.matches[0].p1;
+  r = pods.updateMatch(r, r.matches[0].id, { w1: 2, w2: 0 });
+  const before = r.matches.filter((m) => m.p1 === who || m.p2 === who).length;
+  const out = pods.renamePlayer(r, who, 'Zara');
+  assert.ok(out.pods[0].players.some((p) => p.name === 'Zara'));
+  assert.ok(!out.pods[0].players.some((p) => p.name === who));
+  assert.strictEqual(out.matches.filter((m) => m.p1 === 'Zara' || m.p2 === 'Zara').length, before);
+  assert.strictEqual(pods.standings(out, true)['1'].players.find((p) => p.name === 'Zara').points, 3);
+  const other = r.pods[0].players.find((p) => p.name !== who).name;
+  assert.throws(() => pods.renamePlayer(r, who, other.toUpperCase()), /already in this draft/);
+  assert.throws(() => pods.renamePlayer(r, who, 'Voter'.toLowerCase(), ['Voter']), /already in this draft/);
+  assert.doesNotThrow(() => pods.renamePlayer(r, who, who.toUpperCase()), 'capitals-only change is fine');
+});

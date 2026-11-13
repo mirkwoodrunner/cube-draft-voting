@@ -21,6 +21,7 @@
     vote: h('div'),
     cubes: h('div'),
     ballots: h('div'),
+    danger: h('div'),
     results: h('div', { class: 'space-y-4' })
   };
 
@@ -48,7 +49,10 @@
   function wipeWarning(d, what) {
     if (d.session.status !== 'assigned') return '';
     const played = ((d.results && d.results.matches) || []).filter((m) => m.w1 !== null && m.w1 !== undefined).length;
-    return ` ${what}${played ? ` and ${played} recorded match result${played === 1 ? '' : 's'}` : ''} will be cleared.`;
+    const late = d.results ? [...d.results.pods.flatMap((p) => p.players), ...d.results.unassigned].filter((p) => p.late).length : 0;
+    const parts = [what, played && `${played} recorded match result${played === 1 ? '' : 's'}`, late && `${late} late player${late === 1 ? '' : 's'} with no ballot`].filter(Boolean);
+    const list = parts.length > 1 ? `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}` : parts[0];
+    return ` ${list} will be cleared.`;
   }
 
   function formatView(d) {
@@ -93,10 +97,15 @@
           voters.map((v) => h('span', { class: 'inline-flex items-center gap-1 rounded-full bg-slate-700 py-1 pl-2.5 pr-1 text-xs' },
             v.name, v.you && h('span', { class: 'text-slate-400' }, '(you)'),
             h('button', {
+              type: 'button', 'aria-label': `Rename ${v.name}`, title: 'Rename',
+              class: 'flex h-5 w-5 items-center justify-center rounded-full text-slate-300 hover:bg-sky-600 hover:text-white',
+              onclick: (e) => renamePlayer(v.name, act, e.currentTarget)
+            }, '✎'),
+            h('button', {
               type: 'button', 'aria-label': `Remove ${v.name}'s vote`, title: 'Remove this vote',
               class: 'flex h-5 w-5 items-center justify-center rounded-full text-slate-300 hover:bg-red-600 hover:text-white',
               onclick: (e) => {
-                const extra = session.status === 'assigned' ? `${wipeWarning(d, 'The pod assignment')} Voting goes back to closed.` : '';
+                const extra = session.status === 'assigned' ? ' They will be taken out of their pod. Everyone else\'s seats and match results stay.' : '';
                 if (confirm(`Remove ${v.name}'s vote?${extra}`)) act(`/voters/${v.id}`, e.currentTarget, { method: 'DELETE' });
               }
             }, '✕')))),
@@ -249,6 +258,26 @@
     slots.cubes.replaceChildren(editing ? editorView(data) : cubesView(data));
   }
 
+  // ---------- delete the draft ----------
+
+  function dangerView(d) {
+    return card(
+      h('h2', { class: 'font-semibold text-red-300' }, 'Delete this draft'),
+      h('p', { class: 'text-sm text-slate-400' }, 'Removes the draft for good, with its ballots, pods and match results. Cubes in your library are kept.'),
+      smallBtn('bg-red-700 hover:bg-red-600', 'Delete draft', async (e) => {
+        if (!confirm(`Delete "${d.session.title}"? This cannot be undone.`)) return;
+        e.currentTarget.disabled = true;
+        try {
+          await api(base, { method: 'DELETE' });
+          clearInterval(timer);
+          location.href = d.isOwner ? '/owner' : '/';
+        } catch (err) {
+          alert(err.message);
+          e.currentTarget.disabled = false;
+        }
+      }));
+  }
+
   // ---------- render ----------
 
   /** Redraws only the sections whose data changed, so a half-ranked ballot or half-edited cube list survives the 5 second refresh. */
@@ -276,6 +305,9 @@
       slots.results.replaceChildren(...(results ? [h('h2', { class: 'pt-2 text-xl font-bold' }, 'Results'), ...resultsView(d, duplicateNames(cubes), act).flat(Infinity).filter(Boolean)] : []));
     }
 
+    const dangerKey = JSON.stringify([session.title, d.isOwner]);
+    if (dangerKey !== keys.danger) { keys.danger = dangerKey; slots.danger.replaceChildren(dangerView(d)); }
+
     const ballotKey = JSON.stringify([voters, cubeKey]);
     if (ballotKey !== keys.ballots) {
       keys.ballots = ballotKey;
@@ -292,6 +324,6 @@
     try { render(await api(base)); } catch { /* keep the last view; try again next tick */ }
   }
 
-  app.replaceChildren(slots.top, h('div', { class: 'mt-4 space-y-4' }, slots.vote, slots.cubes, slots.ballots, slots.results));
+  app.replaceChildren(slots.top, h('div', { class: 'mt-4 space-y-4' }, slots.vote, slots.cubes, slots.ballots, slots.results, slots.danger));
   api(base).then(render).catch((err) => showError(app, err.status === 404 ? 'This admin link is not valid.' : err.message));
 })();

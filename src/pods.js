@@ -10,6 +10,9 @@
  *   results.matches       [{ id, cubeId, round, p1, p2, w1, w2, d }]
  *                         w1 / w2 / d are null until the result is entered.
  *   results.edited        true once the admin has changed the pods by hand
+ *   player.late           true for someone added after voting. They have no
+ *                         ballot, so rank and satisfaction are null and they
+ *                         are left out of the happiness numbers.
  */
 
 const crypto = require('crypto');
@@ -33,15 +36,18 @@ const satisfactionOf = (r, K) => (K > 1 ? (K - r) / (K - 1) : 1);
 /** Pod satisfaction and the overall stats block, rebuilt from the pods. */
 function recompute(results) {
   const rankCounts = {};
+  const rankKey = (p) => (p.rank === null || p.rank === undefined ? Infinity : p.rank);
+  const scored = (players) => players.filter((p) => !p.late).map((p) => p.satisfaction);
   for (const pod of results.pods) {
-    pod.players.sort((a, b) => (a.team ?? 0) - (b.team ?? 0) || a.rank - b.rank || byName(a, b));
-    pod.satisfaction = mean(pod.players.map((p) => p.satisfaction));
-    for (const p of pod.players) rankCounts[p.rank] = (rankCounts[p.rank] || 0) + 1;
+    pod.players.sort((a, b) => (a.team ?? 0) - (b.team ?? 0) || rankKey(a) - rankKey(b) || byName(a, b));
+    pod.satisfaction = mean(scored(pod.players));
+    for (const p of pod.players) if (!p.late) rankCounts[p.rank] = (rankCounts[p.rank] || 0) + 1;
   }
-  const seated = results.pods.flatMap((p) => p.players.map((m) => m.satisfaction));
+  const seatedCount = results.pods.reduce((n, p) => n + p.players.length, 0);
+  const seated = results.pods.flatMap((p) => scored(p.players));
   results.stats = {
-    players: seated.length + results.unassigned.length,
-    seated: seated.length,
+    players: seatedCount + results.unassigned.length,
+    seated: seatedCount,
     unassigned: results.unassigned.length,
     groupSatisfaction: mean(seated),
     rankCounts
@@ -107,6 +113,7 @@ function movePlayer(results, name, toCubeId, ctx) {
 
   const from = findPlayer(r, name);
   const fromId = from.pod ? from.pod.cubeId : null;
+  const late = Boolean((from.pod ? from.pod.players : r.unassigned)[from.index].late);
   if (fromId === target) return r;
 
   let targetPod = null;
@@ -153,19 +160,72 @@ function movePlayer(results, name, toCubeId, ctx) {
   }
 
   if (targetPod) {
-    const rank = rankOf(prefs, target, K);
-    const seat = { name, rank, satisfaction: satisfactionOf(rank, K) };
+    const rank = late ? null : rankOf(prefs, target, K);
+    const seat = late ? { name, rank: null, satisfaction: null, late: true } : { name, rank, satisfaction: satisfactionOf(rank, K) };
     if (ctx.teamMode) {
       const sizes = [0, 1].map((t) => targetPod.players.filter((p) => p.team === t).length);
       seat.team = sizes[1] < sizes[0] ? 1 : 0;
     }
     targetPod.players.push(seat);
   } else {
-    r.unassigned.push({ name, reason: 'Moved out of the pods by the admin' });
+    r.unassigned.push({ name, reason: 'Moved out of the pods by the admin', ...(late ? { late: true } : {}) });
     r.unassigned.sort(byName);
   }
 
   r.edited = true;
+  return recompute(r);
+}
+
+const allNames = (r) => [...r.pods.flatMap((p) => p.players), ...r.unassigned].map((p) => p.name);
+
+/**
+ * Adds someone who did not vote, straight into a pod (or the unassigned list
+ * when `toCubeId` is null). `ctx.voterNames` are names already taken by ballots.
+ */
+function addPlayer(results, name, toCubeId, ctx) {
+  const r = clone(results);
+  // Names in old match results count too, so a newcomer never inherits someone else's record.
+  const matchNames = (r.matches || []).flatMap((m) => [m.p1, m.p2]);
+  const taken = new Set([...allNames(r), ...(ctx.voterNames || []), ...matchNames].map(lower));
+  if (taken.has(lower(name))) throw new PodError(`${name} is already in this draft`);
+  r.unassigned.push({ name, late: true, reason: 'Joined after voting' });
+  r.edited = true;
+  if (toCubeId === null || toCubeId === undefined) return recompute(r);
+  return movePlayer(r, name, toCubeId, ctx);
+}
+
+/**
+ * Takes a player out of the draft entirely. Their unplayed pairings go.
+ * Results they already played are kept as history.
+ */
+function removePlayer(results, name, ctx) {
+  const r = movePlayer(results, name, null, ctx);
+  r.unassigned = r.unassigned.filter((p) => p.name !== name);
+  r.matches = (r.matches || []).filter((m) => isPlayed(m) || !involves(m, name));
+  r.edited = true;
+  return recompute(r);
+}
+
+/**
+ * Renames a player everywhere in the assignment: their seat and every match,
+ * played or not. `takenNames` are other names in the session (ballots) that
+ * the new name must not clash with. A change of capitals only is allowed.
+ */
+function renamePlayer(results, from, to, takenNames = []) {
+  const r = clone(results);
+  if (from === to) return r;
+  const matchNames = (r.matches || []).flatMap((m) => [m.p1, m.p2]);
+  const others = [...allNames(r), ...matchNames, ...takenNames].filter((n) => n !== from).map(lower);
+  if (others.includes(lower(to))) throw new PodError(`${to} is already in this draft`);
+  let found = false;
+  for (const p of [...r.pods.flatMap((x) => x.players), ...r.unassigned]) {
+    if (p.name === from) { p.name = to; found = true; }
+  }
+  for (const m of r.matches || []) {
+    if (m.p1 === from) { m.p1 = to; found = true; }
+    if (m.p2 === from) { m.p2 = to; found = true; }
+  }
+  if (!found) throw new PodError(`${from} is not in this draft`);
   return recompute(r);
 }
 
@@ -324,6 +384,9 @@ module.exports = {
   splitTeams,
   setTeamMode,
   movePlayer,
+  addPlayer,
+  removePlayer,
+  renamePlayer,
   switchTeam,
   addMatch,
   updateMatch,
