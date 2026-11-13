@@ -26,9 +26,17 @@ function moveSelect(d, name, currentCubeId, act) {
     options.push(h('option', { value: String(c.id) }, `${c.name} (${pod ? pod.players.length : 0}/${c.maxPlayers})`));
   }
   if (currentCubeId !== null) options.push(h('option', { value: '__out' }, 'Out of the pods'));
+  options.push(h('option', { value: '__remove' }, 'Remove from draft'));
   const sel = smallSelect(`Move ${name}`, options, 'max-w-[11rem]');
   sel.addEventListener('change', () => {
     if (!sel.value) return;
+    if (sel.value === '__remove') {
+      const voted = d.voters.some((v) => v.name === name);
+      if (confirm(`Remove ${name} from the draft?${voted ? ' Their ballot is deleted too.' : ''} Unplayed pairings for them are dropped. Results they already played are kept.`)) {
+        act('/pods/remove', sel, { body: { name } });
+      } else sel.value = '';
+      return;
+    }
     const cubeId = sel.value === '__out' ? null : sel.value;
     act('/pods/move', sel, { body: { name, cubeId } });
   });
@@ -40,7 +48,9 @@ function playerRow(d, pod, p, act) {
   return h('li', { class: 'flex flex-wrap items-center justify-between gap-2 py-1.5 text-sm' },
     h('span', { class: 'flex items-center gap-2' },
       h('span', null, p.name),
-      h('span', { class: `rounded-full px-2 py-0.5 text-xs ${p.rank === 1 ? 'bg-emerald-600/30 text-emerald-300' : 'bg-slate-700 text-slate-300'}` }, `${ordinal(p.rank)} choice`)),
+      p.late
+        ? h('span', { class: 'rounded-full bg-violet-600/30 px-2 py-0.5 text-xs text-violet-200' }, 'joined late')
+        : h('span', { class: `rounded-full px-2 py-0.5 text-xs ${p.rank === 1 ? 'bg-emerald-600/30 text-emerald-300' : 'bg-slate-700 text-slate-300'}` }, `${ordinal(p.rank)} choice`)),
     h('span', { class: 'flex items-center gap-1.5' },
       teamMode && miniBtn('bg-slate-700 hover:bg-slate-600', `To ${TEAM_NAMES[p.team === 1 ? 0 : 1]}`, (e) => act('/pods/switch-team', e.currentTarget, { body: { name: p.name } })),
       moveSelect(d, p.name, pod.cubeId, act)));
@@ -180,6 +190,29 @@ function podCard(d, pod, dupes, act) {
     matchesBlock(d, pod, act));
 }
 
+/** Adds someone who didn't vote straight into a pod. */
+function addPlayerForm(d, act) {
+  const name = h('input', { maxlength: 40, placeholder: 'Name', 'aria-label': 'New player name', class: 'min-w-0 flex-1 rounded-md bg-slate-900 px-2 py-1 text-sm ring-1 ring-slate-600 focus:outline-none focus:ring-emerald-500' });
+  const pod = smallSelect('Pod for the new player', [
+    ...d.cubes.map((c) => {
+      const p = d.results.pods.find((x) => x.cubeId === String(c.id));
+      return h('option', { value: String(c.id) }, `${c.name} (${p ? p.players.length : 0}/${c.maxPlayers})`);
+    }),
+    h('option', { value: '' }, 'Not in a pod yet')
+  ], 'min-w-0 max-w-[12rem]');
+  const first = d.results.pods[0];
+  if (first) pod.value = first.cubeId;
+  const add = miniBtn('bg-sky-600 hover:bg-sky-500', 'Add player', (e) => {
+    if (!name.value.trim()) { alert('Enter a name'); return; }
+    act('/pods/add', e.currentTarget, { body: { name: name.value, cubeId: pod.value || null } });
+  });
+  return h('details', { class: 'rounded-lg bg-slate-900/40 p-3' },
+    h('summary', { class: 'cursor-pointer text-sm font-medium text-slate-200' }, 'Add a player who joined after voting'),
+    h('div', { class: 'mt-3 space-y-2' },
+      h('div', { class: 'flex flex-wrap items-center gap-2' }, name, pod, add),
+      h('p', { class: 'text-xs text-slate-500' }, `They have no ballot, so they're left out of the happiness score.${d.session.teamMode ? ' They join the smaller team.' : ''} Re-running the assignment or reopening voting drops them.`)));
+}
+
 function resultsView(d, dupes, act) {
   const { results } = d;
   const s = results.stats;
@@ -194,15 +227,16 @@ function resultsView(d, dupes, act) {
         h('div', { class: 'text-sm text-slate-300' },
           h('div', null, `${s.seated} of ${s.players} players seated in ${results.pods.length} pod${results.pods.length === 1 ? '' : 's'}`),
           dist && h('div', null, dist))),
-      h('p', { class: 'text-xs text-slate-500' }, '100% means every seated player got their first choice and 0% means every one got their last. Unassigned players are not counted.'),
+      h('p', { class: 'text-xs text-slate-500' }, '100% means every seated player got their first choice and 0% means every one got their last. Unassigned players and late joiners are not counted.'),
       results.edited && h('p', { class: 'text-xs text-amber-300' }, 'You have changed these pods by hand. Re-running the assignment replaces your changes.'),
-      h('p', { class: 'text-xs text-slate-400' }, 'Use "Move to" on any player to change pods.', d.session.teamMode ? ' Use the team button to swap a player to the other team.' : '')),
+      h('p', { class: 'text-xs text-slate-400' }, 'Use "Move to" on any player to change pods or remove them from the draft.', d.session.teamMode ? ' Use the team button to swap a player to the other team.' : ''),
+      addPlayerForm(d, act)),
     results.pods.map((p) => podCard(d, p, dupes, act)),
     results.unassigned.length > 0 && rCard(
       h('h3', { class: 'font-semibold text-amber-300' }, `Unassigned (${results.unassigned.length}), needs your review`),
       h('ul', { class: 'divide-y divide-slate-700 text-sm' },
         results.unassigned.map((u) => h('li', { class: 'flex flex-wrap items-center justify-between gap-2 py-1.5' },
-          h('div', null, h('span', { class: 'font-medium' }, u.name), h('span', { class: 'block text-xs text-slate-400' }, u.reason)),
+          h('div', null, h('span', { class: 'font-medium' }, u.name), u.late && h('span', { class: 'ml-2 rounded-full bg-violet-600/30 px-2 py-0.5 text-xs text-violet-200' }, 'joined late'), h('span', { class: 'block text-xs text-slate-400' }, u.reason)),
           moveSelect(d, u.name, null, act))))),
     results.notFired.length > 0 && rCard(
       h('h3', { class: 'font-semibold text-slate-300' }, 'Cubes that did not fire'),

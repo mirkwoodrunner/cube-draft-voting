@@ -49,7 +49,10 @@
   function wipeWarning(d, what) {
     if (d.session.status !== 'assigned') return '';
     const played = ((d.results && d.results.matches) || []).filter((m) => m.w1 !== null && m.w1 !== undefined).length;
-    return ` ${what}${played ? ` and ${played} recorded match result${played === 1 ? '' : 's'}` : ''} will be cleared.`;
+    const late = d.results ? [...d.results.pods.flatMap((p) => p.players), ...d.results.unassigned].filter((p) => p.late).length : 0;
+    const parts = [what, played && `${played} recorded match result${played === 1 ? '' : 's'}`, late && `${late} late player${late === 1 ? '' : 's'} with no ballot`].filter(Boolean);
+    const list = parts.length > 1 ? `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}` : parts[0];
+    return ` ${list} will be cleared.`;
   }
 
   function formatView(d) {
@@ -97,7 +100,7 @@
               type: 'button', 'aria-label': `Remove ${v.name}'s vote`, title: 'Remove this vote',
               class: 'flex h-5 w-5 items-center justify-center rounded-full text-slate-300 hover:bg-red-600 hover:text-white',
               onclick: (e) => {
-                const extra = session.status === 'assigned' ? `${wipeWarning(d, 'The pod assignment')} Voting goes back to closed.` : '';
+                const extra = session.status === 'assigned' ? ' They will be taken out of their pod. Everyone else\'s seats and match results stay.' : '';
                 if (confirm(`Remove ${v.name}'s vote?${extra}`)) act(`/voters/${v.id}`, e.currentTarget, { method: 'DELETE' });
               }
             }, '✕')))),

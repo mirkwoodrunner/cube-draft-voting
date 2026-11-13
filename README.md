@@ -12,16 +12,18 @@ Ranked-choice voting and pod assignment for Magic: The Gathering cube drafts.
 ### Admin tools
 
 - **Vote from the dashboard.** Tick "I am playing in this draft" to rank the cubes without opening the player link. Untick it to remove your vote.
-- **Remove a voter.** Each name on the dashboard has a ✕ that deletes that vote.
+- **Remove a voter.** Each name on the dashboard has a ✕ that deletes that vote. Before pods are assigned this clears any results. After, it only takes that player out of their pod.
 - **Edit cubes.** Add, remove or change cubes at any time. Removed cubes drop out of every ballot and new cubes are added at the bottom of every ballot.
 - **Reopen voting.** Goes back to open after closing or assigning.
 
 - **Edit pods.** After assigning, use "Move to" on any player to put them in another pod, a cube that did not fire, or out of the pods. Pods outside their min/max are flagged, not blocked.
+- **Add a late player.** After assigning, "Add a player who joined after voting" puts a new name straight into a pod. They have no ballot, so they're tagged "joined late" and left out of the happiness score. In a team draft they join the smaller team.
+- **Remove a player.** "Move to..." then "Remove from draft" takes someone out without touching anyone else's seat. Their ballot is deleted so a re-run won't seat them. Their unplayed pairings are dropped. Results they already played stay in the match list.
 - **Match results.** Each pod has a match list. Add a match with two players, a round and the games won. Leave scores blank to add a pairing now and fill it in later. Standings use 3 points for a match win and 1 for a draw.
 - **Ballots.** Every voter's full ranking is listed under Ballots.
 - **Delete the draft.** At the bottom of the dashboard. Removes its ballots, pods and match results. Cubes in the library are kept. The owner page has a Delete button on each draft too.
 
-Changing the cubes or removing a vote after pods were assigned clears the assignment, including any pod edits and match results. Re-running the assignment or reopening voting does the same. The dashboard warns before each of these.
+Adding or removing a cube after pods were assigned clears the assignment, including pod edits, late players and match results. Re-running the assignment or reopening voting does the same. The dashboard warns before each of these.
 
 ### Team draft
 
