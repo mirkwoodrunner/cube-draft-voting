@@ -31,7 +31,7 @@
         h('label', { class: 'block text-sm font-medium text-slate-200' }, 'Password', pw), err, go));
   }
 
-  function sessionRow(s) {
+  function sessionRow(s, refresh) {
     const [text, color] = STATUS[s.status] || STATUS.open;
     const facts = [
       new Date(s.createdAt).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }),
@@ -48,7 +48,14 @@
           s.teamMode && h('span', { class: 'rounded-full bg-violet-600 px-2 py-0.5 text-[11px] font-semibold text-white' }, 'Team draft')),
         h('div', { class: 'text-xs text-slate-400' }, facts.join(' · '))),
       s.adminUrl
-        ? h('a', { href: s.adminUrl, class: 'shrink-0 rounded-lg bg-emerald-600 px-3 py-2 text-sm font-semibold hover:bg-emerald-500' }, 'Open')
+        ? h('div', { class: 'flex shrink-0 gap-2' },
+          h('a', { href: s.adminUrl, class: 'rounded-lg bg-emerald-600 px-3 py-2 text-sm font-semibold hover:bg-emerald-500' }, 'Open'),
+          h('button', { type: 'button', class: 'rounded-lg bg-slate-700 px-3 py-2 text-sm font-semibold hover:bg-red-600', onclick: async (e) => {
+            if (!confirm(`Delete "${s.title}"? Its ballots, pods and match results are removed for good.`)) return;
+            e.currentTarget.disabled = true;
+            try { await api(`/admin/${s.adminUrl.split('/').pop()}`, { method: 'DELETE' }); } catch (ex) { alert(ex.message); }
+            refresh();
+          } }, 'Delete'))
         : h('span', { class: 'text-xs text-slate-500' }, 'Made with the first version, no dashboard'));
   }
 
@@ -84,7 +91,7 @@
         card(
           h('h2', { class: 'font-semibold' }, `Drafts (${sessions.length})`),
           h('p', { class: 'text-xs text-slate-400' }, 'Open a draft to see its ballots, edit pods, or enter match results.'),
-          sessions.length ? sessions.map(sessionRow) : h('p', { class: 'text-sm text-slate-400' }, 'No drafts yet.')),
+          sessions.length ? sessions.map((s) => sessionRow(s, load)) : h('p', { class: 'text-sm text-slate-400' }, 'No drafts yet.')),
         card(
           h('h2', { class: 'font-semibold' }, `Cube library (${cubes.length})`),
           h('p', { class: 'text-xs text-slate-400' }, 'Cubes saved here show up in "Add a saved cube" when you set up a draft. Tick "Save to my cube library" on a cube to add it.'),

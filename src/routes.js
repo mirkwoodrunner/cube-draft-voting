@@ -564,6 +564,13 @@ router.delete('/admin/:adminToken/matches/:matchId', wrap(async (req, res) => {
   await sendView(req, res);
 }));
 
+// Deletes the whole draft: cubes, ballots, pods and match results. Cubes saved in the library are kept.
+router.delete('/admin/:adminToken', wrap(async (req, res) => {
+  const s = await sessionByAdminToken(req.params.adminToken);
+  await pool.query('DELETE FROM sessions WHERE id = $1', [s.id]);
+  res.json({ success: true });
+}));
+
 // ---------- cube library ----------
 
 const savedCubeDto = (c) => ({
