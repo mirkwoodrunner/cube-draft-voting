@@ -118,3 +118,33 @@ function cubeInfo(cube, dupes) {
 function showError(container, message) {
   container.replaceChildren(h('div', { class: 'rounded-xl bg-red-900/40 p-4 text-red-200 ring-1 ring-red-700' }, message));
 }
+
+/** The logged-in Discord player, or null. Fetched once per page. */
+let mePromise = null;
+function getMe() {
+  if (!mePromise) mePromise = api('/me').catch(() => ({ enabled: false, player: null }));
+  return mePromise;
+}
+
+function avatar(p, size = 'h-6 w-6') {
+  return p.avatarUrl
+    ? h('img', { src: p.avatarUrl, alt: '', class: `${size} shrink-0 rounded-full` })
+    : h('span', { class: `${size} inline-flex shrink-0 items-center justify-center rounded-full bg-indigo-600 text-[10px] font-bold text-white` }, p.name.slice(0, 1).toUpperCase());
+}
+
+/** Login status line with Discord login or logout, plus a link to player records. */
+async function accountBar() {
+  const { enabled, player } = await getMe();
+  const records = h('a', { href: '/players', class: 'text-slate-400 hover:text-slate-200 hover:underline' }, 'Player records');
+  if (!enabled) return h('div', { class: 'mb-4 flex justify-end text-sm' }, records);
+  const next = encodeURIComponent(location.pathname);
+  const right = player
+    ? h('span', { class: 'flex items-center gap-2' },
+      h('a', { href: `/players/${player.id}`, class: 'flex items-center gap-2 text-slate-200 hover:underline' }, avatar(player), player.name),
+      h('button', { type: 'button', class: 'text-slate-400 hover:text-slate-200 hover:underline', onclick: async () => {
+        await api('/auth/logout', { method: 'POST' });
+        location.reload();
+      } }, 'Log out'))
+    : h('a', { href: `/auth/discord?next=${next}`, class: 'rounded-lg bg-indigo-600 px-3 py-1.5 font-semibold text-white hover:bg-indigo-500' }, 'Log in with Discord');
+  return h('div', { class: 'mb-4 flex items-center justify-between gap-3 text-sm' }, records, right);
+}

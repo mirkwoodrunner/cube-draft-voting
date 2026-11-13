@@ -7,6 +7,8 @@ const { fetchCubeInfo, parseCubeUrl, CubeCobraError } = require('./cubecobra');
 const { assignPods } = require('./borda');
 const pods = require('./pods');
 const owner = require('./owner');
+const discord = require('./discord');
+const records = require('./records');
 
 const router = express.Router();
 
@@ -202,23 +204,28 @@ router.get('/sessions/:sessionId', wrap(async (req, res) => {
 }));
 
 // A returning player sends the edit token their browser saved when they first voted.
+// A logged-in player gets the ballot tied to their account first, on any device.
 router.get('/sessions/:sessionId/ballot', wrap(async (req, res) => {
   const s = await sessionByPublicId(req.params.sessionId);
+  const player = await discord.currentPlayer(req);
   const token = req.get('x-voter-token');
-  if (!token) return res.json({ ballot: null });
-  const { rows } = await pool.query(
-    'SELECT player_name, preferences FROM votes WHERE session_id = $1 AND token_hash = $2',
-    [s.id, sha256(token)]
-  );
-  res.json({ ballot: rows[0] ? { playerName: rows[0].player_name, preferences: rows[0].preferences } : null });
+  let row = null;
+  if (player) {
+    ({ rows: [row] } = await pool.query('SELECT player_name, preferences FROM votes WHERE session_id = $1 AND player_id = $2', [s.id, player.id]));
+  }
+  if (!row && token) {
+    ({ rows: [row] } = await pool.query('SELECT player_name, preferences FROM votes WHERE session_id = $1 AND token_hash = $2', [s.id, sha256(token)]));
+  }
+  res.json({ ballot: row ? { playerName: row.player_name, preferences: row.preferences } : null });
 }));
 
 /**
  * Saves or updates one ballot. `voterToken` is the edit token the caller holds.
  * `insertToken` (admin only) is the token to store when this is a new ballot,
- * instead of issuing a random one.
+ * instead of issuing a random one. `playerId` is the logged-in Discord player,
+ * whose ballot is found by account instead of by token.
  */
-async function saveBallot(s, playerName, prefs, voterToken, insertToken = null) {
+async function saveBallot(s, playerName, prefs, voterToken, insertToken = null, playerId = null) {
   const cubes = await loadCubes(s.id);
   const cubeIds = cubes.map((c) => String(c.id));
   const ranked = Array.isArray(prefs) ? prefs.map(String) : [];
@@ -243,29 +250,37 @@ async function saveBallot(s, playerName, prefs, voterToken, insertToken = null) 
     const nameTaken = () => new HttpError(409, 'Someone has already voted under that name. Pick a different name.', 'name_taken');
     const prefsJson = JSON.stringify(preferences);
 
-    // A browser holding the edit token for an existing ballot updates that ballot (renaming is allowed).
+    // An existing ballot is updated (renaming is allowed). A logged-in player's ballot is found by
+    // account. Otherwise the browser's edit token finds it, and logging in links that ballot to the account.
     let issued = null;
-    if (voterToken) {
+    let isUpdate = false;
+    const update = async (where, params) => {
       try {
-        const updated = await client.query(
-          `UPDATE votes SET player_name = $2, preferences = $3, updated_at = now()
-           WHERE session_id = $1 AND token_hash = $4 RETURNING id`,
-          [s.id, playerName, prefsJson, sha256(voterToken)]
+        const out = await client.query(
+          `UPDATE votes SET player_name = $2, preferences = $3, updated_at = now(), player_id = COALESCE(player_id, $4::int)
+           WHERE session_id = $1 AND ${where} RETURNING token_hash`,
+          [s.id, playerName, prefsJson, playerId, ...params]
         );
-        if (updated.rowCount) issued = voterToken;
+        return out.rowCount > 0;
       } catch (err) {
         if (err.code === '23505') throw nameTaken();
         throw err;
       }
+    };
+    if (playerId !== null && await update('player_id = $5', [playerId])) {
+      isUpdate = true;
+      issued = voterToken;
+    } else if (voterToken && await update('token_hash = $5 AND ($4::int IS NULL OR player_id IS NULL OR player_id = $4::int)', [sha256(voterToken)])) {
+      isUpdate = true;
+      issued = voterToken;
     }
 
-    const isUpdate = issued !== null;
     if (!isUpdate) {
       issued = insertToken || newToken(24);
       const inserted = await client.query(
-        `INSERT INTO votes (session_id, player_name, preferences, token_hash)
-         VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING RETURNING id`,
-        [s.id, playerName, prefsJson, sha256(issued)]
+        `INSERT INTO votes (session_id, player_name, preferences, token_hash, player_id)
+         VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING RETURNING id`,
+        [s.id, playerName, prefsJson, sha256(issued), playerId]
       );
       if (!inserted.rowCount) throw nameTaken();
     }
@@ -283,7 +298,8 @@ router.post('/sessions/:sessionId/vote', wrap(async (req, res) => {
   const playerName = cleanText(req.body.playerName, 40, 'Name', { required: true });
   const voterToken = typeof req.body.voterToken === 'string' ? req.body.voterToken : null;
   const s = await sessionByPublicId(req.params.sessionId);
-  res.json(await saveBallot(s, playerName, req.body.preferences, voterToken));
+  const player = await discord.currentPlayer(req);
+  res.json(await saveBallot(s, playerName, req.body.preferences, voterToken, null, player ? player.id : null));
 }));
 
 // ---------- admin dashboard ----------
@@ -295,9 +311,10 @@ async function adminView(s, req) {
   const cubes = await loadCubes(s.id);
   const myHash = sha256(adminVoterToken(s.admin_token));
   const { rows: votes } = await pool.query(
-    'SELECT id, player_name, preferences, updated_at, token_hash FROM votes WHERE session_id = $1 ORDER BY created_at, id',
+    'SELECT id, player_name, preferences, updated_at, token_hash, player_id FROM votes WHERE session_id = $1 ORDER BY created_at, id',
     [s.id]
   );
+  const linked = await linkedPlayers(records.linkedNames(s.results, votes));
   return {
     session: {
       id: s.public_id,
@@ -313,8 +330,20 @@ async function adminView(s, req) {
     voters: votes.map((v) => ({ id: v.id, name: v.player_name, preferences: v.preferences, updatedAt: v.updated_at, you: v.token_hash === myHash })),
     results: s.results || null,
     standings: s.results ? pods.standings(s.results, s.team_mode) : null,
+    linked,
     isOwner: owner.isOwner(req)
   };
+}
+
+/** { name: { id, name, avatarUrl } } for the names in a draft that belong to a Discord player. */
+async function linkedPlayers(byName) {
+  const ids = [...new Set(byName.values())];
+  if (!ids.length) return {};
+  const { rows } = await pool.query('SELECT * FROM players WHERE id = ANY($1::int[])', [ids]);
+  const byId = new Map(rows.map((p) => [p.id, discord.playerDto(p)]));
+  const out = {};
+  for (const [name, id] of byName) if (byId.has(id)) out[name] = byId.get(id);
+  return out;
 }
 
 /** Sends the refreshed dashboard after an admin action. */
@@ -340,9 +369,10 @@ router.post('/admin/:adminToken/assign', wrap(async (req, res) => {
     id: String(c.id), name: c.name, author: c.author, url: c.url,
     minPlayers: c.min_players, maxPlayers: c.max_players
   }));
-  const { rows: votes } = await pool.query('SELECT player_name, preferences FROM votes WHERE session_id = $1', [s.id]);
+  const { rows: votes } = await pool.query('SELECT player_name, preferences, player_id FROM votes WHERE session_id = $1', [s.id]);
   let results = assignPods(cubes, votes.map((v) => ({ name: v.player_name, preferences: v.preferences })));
-  results = { ...(s.team_mode ? pods.setTeamMode(results, true) : results), matches: [], computedAt: new Date().toISOString() };
+  const playerIds = Object.fromEntries(votes.filter((v) => v.player_id !== null).map((v) => [v.player_name, v.player_id]));
+  results = { ...(s.team_mode ? pods.setTeamMode(results, true) : results), matches: [], playerIds, computedAt: new Date().toISOString() };
 
   await pool.query("UPDATE sessions SET results = $2, status = 'assigned', assigned_at = now() WHERE id = $1", [s.id, JSON.stringify(results)]);
   await sendView(req, res);
@@ -530,11 +560,12 @@ router.put('/admin/:adminToken/team-mode', wrap(async (req, res) => {
 /** What the pod functions need to know about the session: its cubes, ballots and format. */
 async function podContext(s, row, client) {
   const cubes = (await loadCubes(s.id, client)).map(cubeDto);
-  const { rows: votes } = await client.query('SELECT player_name, preferences FROM votes WHERE session_id = $1', [s.id]);
+  const { rows: votes } = await client.query('SELECT player_name, preferences, player_id FROM votes WHERE session_id = $1', [s.id]);
   return {
     cubes,
     preferences: new Map(votes.map((v) => [v.player_name, v.preferences])),
     voterNames: votes.map((v) => v.player_name),
+    linkedIds: votes.filter((v) => v.player_id !== null).map((v) => v.player_id),
     teamMode: row.team_mode
   };
 }
@@ -601,7 +632,14 @@ router.post('/admin/:adminToken/players/rename', wrap(async (req, res) => {
 router.post('/admin/:adminToken/pods/add', wrap(async (req, res) => {
   const s = await sessionByAdminToken(req.params.adminToken);
   const name = cleanText(req.body.name, 40, 'Name', { required: true });
-  await editResults(s, async (results, row, client) => pods.addPlayer(results, name, targetCube(req.body.cubeId), await podContext(s, row, client)));
+  let playerId = null;
+  if (req.body.playerId !== null && req.body.playerId !== undefined && req.body.playerId !== '') {
+    playerId = Number(req.body.playerId);
+    const { rowCount } = Number.isInteger(playerId) ? await pool.query('SELECT 1 FROM players WHERE id = $1', [playerId]) : { rowCount: 0 };
+    if (!rowCount) throw new HttpError(400, 'That player was not found');
+  }
+  await editResults(s, async (results, row, client) =>
+    pods.addPlayer(results, name, targetCube(req.body.cubeId), { ...(await podContext(s, row, client)), playerId }));
   await sendView(req, res);
 }));
 
@@ -684,6 +722,84 @@ router.delete('/library/:id', wrap(async (req, res) => {
   if (!Number.isInteger(id)) throw new HttpError(400, 'Invalid cube');
   await pool.query('DELETE FROM saved_cubes WHERE id = $1', [id]);
   res.json({ success: true });
+}));
+
+// ---------- players and public records ----------
+
+/** Every draft with pods that involves one of these players, as [{ session, entry, playerId }]. */
+async function draftEntries(playerId = null) {
+  const { rows: sessions } = await pool.query(`
+    SELECT s.id, s.title, s.public_id, s.team_mode, s.created_at, s.assigned_at, s.results,
+      COALESCE((SELECT json_agg(json_build_object('player_name', v.player_name, 'player_id', v.player_id))
+        FROM votes v WHERE v.session_id = s.id AND v.player_id IS NOT NULL), '[]') AS votes
+    FROM sessions s
+    WHERE s.status = 'assigned' AND s.results IS NOT NULL
+    ORDER BY COALESCE(s.assigned_at, s.created_at) DESC, s.id DESC`);
+  const out = [];
+  for (const s of sessions) {
+    for (const [name, id] of records.linkedNames(s.results, s.votes)) {
+      if (playerId !== null && id !== playerId) continue;
+      const entry = records.draftEntry(s.results, name, s.team_mode);
+      if (entry) out.push({ session: s, entry, playerId: id });
+    }
+  }
+  return out;
+}
+
+const AUTH_OFF = 'Discord login is turned off on this server';
+
+router.get('/me', wrap(async (req, res) => {
+  const p = await discord.currentPlayer(req);
+  res.json({ enabled: discord.enabled(), player: p ? discord.playerDto(p) : null });
+}));
+
+router.post('/auth/logout', wrap(async (req, res) => {
+  await discord.logout(req, res);
+  res.json({ success: true });
+}));
+
+// Deletes the logged-in player's profile. Their ballots and seats stay in past drafts as plain names.
+router.delete('/me', wrap(async (req, res) => {
+  if (!discord.enabled()) throw new HttpError(403, AUTH_OFF);
+  const p = await discord.currentPlayer(req);
+  if (!p) throw new HttpError(401, 'Log in first');
+  await pool.query('DELETE FROM players WHERE id = $1', [p.id]);
+  await discord.logout(req, res);
+  res.json({ success: true });
+}));
+
+// Everyone who has logged in, with their lifetime record.
+router.get('/players', wrap(async (req, res) => {
+  const { rows } = await pool.query('SELECT * FROM players ORDER BY lower(display_name), id');
+  const byPlayer = new Map(rows.map((p) => [p.id, []]));
+  for (const { entry, playerId } of await draftEntries()) if (byPlayer.has(playerId)) byPlayer.get(playerId).push(entry);
+  res.json({
+    players: rows.map((p) => {
+      const t = records.summarize(byPlayer.get(p.id));
+      delete t.cubes;
+      return { ...discord.playerDto(p), ...t };
+    })
+  });
+}));
+
+router.get('/players/:id', wrap(async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) throw new HttpError(404, 'Player not found');
+  const { rows } = await pool.query('SELECT * FROM players WHERE id = $1', [id]);
+  if (!rows[0]) throw new HttpError(404, 'Player not found');
+  const me = await discord.currentPlayer(req);
+  const list = await draftEntries(id);
+  res.json({
+    player: { ...discord.playerDto(rows[0]), since: rows[0].created_at },
+    isMe: Boolean(me && me.id === id),
+    totals: records.summarize(list.map((x) => x.entry)),
+    drafts: list.map(({ session: s, entry }) => ({
+      title: s.title,
+      date: s.assigned_at || s.created_at,
+      teamMode: s.team_mode,
+      ...entry
+    }))
+  });
 }));
 
 // ---------- site owner ----------

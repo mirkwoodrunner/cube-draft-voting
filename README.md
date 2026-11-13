@@ -44,6 +44,20 @@ Every cube has a "Save to my cube library" box, ticked by default. Saved cubes s
 
 Set `ADMIN_PASSWORD` and log in at `/owner`. It lists every draft ever made, newest first, with votes, pods and match result counts, and opens any draft's admin dashboard even if its admin link was lost. It also manages the cube library. The login lasts 30 days in that browser. Changing the password logs everyone out.
 
+### Discord login and player records
+
+Players can log in with Discord from the vote page. Logging in is optional. Anyone can still vote with just a name.
+
+- A logged-in player's ballot is tied to their account, so they can change it from any device. If they voted before logging in, logging in on the same browser links that ballot.
+- Their name is filled in from Discord. They can change it for that draft.
+- `/players` lists everyone who has logged in with their lifetime record. `/players/:id` shows one player's drafts, cubes, match and game record, and team draft results. These pages are public.
+- Records only count drafts with pods assigned where the player voted or was added while linked. Drafts from before Discord login, and anyone who didn't log in, stay as plain names.
+- Renaming or removing a player keeps the link, so matches they already played still count.
+- On the dashboard, linked players show their Discord avatar. "Add a player who joined after voting" can link the new player to someone who has logged in before.
+- A player can delete their profile from their own page. Their name stays in past drafts as a plain name.
+
+Setup in the [Discord developer portal](https://discord.com/developers/applications). Create an application. Under OAuth2, add the redirect `https://cube-draft-voting.onrender.com/auth/discord/callback`. Copy the client ID and secret into the variables below. Only the `identify` scope is used.
+
 ## Assignment engine (`src/borda.js`)
 
 A cube ranked r-th of K is worth K - r + 1 points. The engine chooses which cubes fire and who plays in each, in this priority:
@@ -69,6 +83,9 @@ Tables are created or upgraded automatically on startup. Existing sessions from 
 | `DATABASE_URL` | Postgres connection string (required) |
 | `PORT` | Defaults to 3000 |
 | `ADMIN_PASSWORD` | Turns on the owner page at `/owner`. Off when unset |
+| `DISCORD_CLIENT_ID` | Turns on Discord login, with the secret. Off when unset |
+| `DISCORD_CLIENT_SECRET` | From the Discord developer portal |
+| `DISCORD_REDIRECT_URI` | Optional. Defaults to `/auth/discord/callback` on the host the request came in on |
 | `CUBECOBRA_BASE_URL` | Override for tests. Defaults to `https://cubecobra.com` |
 
 ## Layout
@@ -78,6 +95,8 @@ Tables are created or upgraded automatically on startup. Existing sessions from 
 - `src/routes.js` API
 - `src/cubecobra.js` Cube Cobra scraper
 - `src/borda.js` assignment engine
+- `src/discord.js` Discord login
+- `src/records.js` player records across drafts
 - `src/pods.js` pod edits, teams, matches and standings
 - `src/owner.js` owner login
 - `public/` Tailwind pages and scripts

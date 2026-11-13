@@ -17,6 +17,13 @@ const smallSelect = (label, options, extra = '') => h('select', { 'aria-label': 
 const teamBadge = (t) => h('span', { class: `rounded-full px-2 py-0.5 text-[11px] font-semibold ${TEAM_STYLE[t]}` }, TEAM_NAMES[t]);
 const isPlayed = (m) => m.w1 !== null && m.w1 !== undefined;
 
+/** A small Discord avatar linking to the player's record, for names tied to a login. */
+function linkedBadge(d, name) {
+  const p = d.linked && d.linked[name];
+  if (!p) return null;
+  return h('a', { href: `/players/${p.id}`, target: '_blank', title: `Logged in with Discord as ${p.name}`, class: 'inline-flex' }, avatar(p, 'h-5 w-5'));
+}
+
 /** Asks for a new name and renames the player everywhere. Returns false if cancelled. */
 function renamePlayer(name, act, el) {
   const to = prompt(`New name for ${name}`, name);
@@ -60,6 +67,7 @@ function playerRow(d, pod, p, act) {
   const teamMode = d.session.teamMode;
   return h('li', { class: 'flex flex-wrap items-center justify-between gap-2 py-1.5 text-sm' },
     h('span', { class: 'flex items-center gap-2' },
+      linkedBadge(d, p.name),
       h('span', null, p.name),
       p.late
         ? h('span', { class: 'rounded-full bg-violet-600/30 px-2 py-0.5 text-xs text-violet-200' }, 'joined late')
@@ -215,14 +223,25 @@ function addPlayerForm(d, act) {
   ], 'min-w-0 max-w-[12rem]');
   const first = d.results.pods[0];
   if (first) pod.value = first.cubeId;
+  // Optional link to a player who has logged in with Discord, so this draft counts toward their record.
+  const who = smallSelect('Discord player', [h('option', { value: '' }, 'No Discord login')], 'min-w-0 max-w-[12rem] hidden');
+  getMe().then(({ enabled }) => enabled && api('/players')).then((out) => {
+    if (!out || !out.players.length) return;
+    const taken = new Set(Object.values(d.linked || {}).map((p) => p.id));
+    who.append(...out.players.filter((p) => !taken.has(p.id)).map((p) => h('option', { value: String(p.id) }, p.name)));
+    who.classList.remove('hidden');
+  }).catch(() => {});
+  who.addEventListener('change', () => {
+    if (who.value && !name.value.trim()) name.value = who.selectedOptions[0].textContent;
+  });
   const add = miniBtn('bg-sky-600 hover:bg-sky-500', 'Add player', (e) => {
     if (!name.value.trim()) { alert('Enter a name'); return; }
-    act('/pods/add', e.currentTarget, { body: { name: name.value, cubeId: pod.value || null } });
+    act('/pods/add', e.currentTarget, { body: { name: name.value, cubeId: pod.value || null, playerId: who.value || null } });
   });
   return h('details', { class: 'rounded-lg bg-slate-900/40 p-3' },
     h('summary', { class: 'cursor-pointer text-sm font-medium text-slate-200' }, 'Add a player who joined after voting'),
     h('div', { class: 'mt-3 space-y-2' },
-      h('div', { class: 'flex flex-wrap items-center gap-2' }, name, pod, add),
+      h('div', { class: 'flex flex-wrap items-center gap-2' }, name, who, pod, add),
       h('p', { class: 'text-xs text-slate-500' }, `They have no ballot, so they're left out of the happiness score.${d.session.teamMode ? ' They join the smaller team.' : ''} Re-running the assignment or reopening voting drops them.`)));
 }
 
@@ -249,7 +268,7 @@ function resultsView(d, dupes, act) {
       h('h3', { class: 'font-semibold text-amber-300' }, `Unassigned (${results.unassigned.length}), needs your review`),
       h('ul', { class: 'divide-y divide-slate-700 text-sm' },
         results.unassigned.map((u) => h('li', { class: 'flex flex-wrap items-center justify-between gap-2 py-1.5' },
-          h('div', null, h('span', { class: 'font-medium' }, u.name), u.late && h('span', { class: 'ml-2 rounded-full bg-violet-600/30 px-2 py-0.5 text-xs text-violet-200' }, 'joined late'), h('span', { class: 'block text-xs text-slate-400' }, u.reason)),
+          h('div', null, linkedBadge(d, u.name), h('span', { class: 'font-medium' }, u.name), u.late && h('span', { class: 'ml-2 rounded-full bg-violet-600/30 px-2 py-0.5 text-xs text-violet-200' }, 'joined late'), h('span', { class: 'block text-xs text-slate-400' }, u.reason)),
           moveSelect(d, u.name, null, act))))),
     results.notFired.length > 0 && rCard(
       h('h3', { class: 'font-semibold text-slate-300' }, 'Cubes that did not fire'),

@@ -10,6 +10,9 @@
  *   results.matches       [{ id, cubeId, round, p1, p2, w1, w2, d }]
  *                         w1 / w2 / d are null until the result is entered.
  *   results.edited        true once the admin has changed the pods by hand
+ *   results.playerIds     { name: playerId } for players who logged in with
+ *                         Discord. Kept after a player leaves so their played
+ *                         matches still count toward their record.
  *   player.late           true for someone added after voting. They have no
  *                         ballot, so rank and satisfaction are null and they
  *                         are left out of the happiness numbers.
@@ -181,6 +184,8 @@ const allNames = (r) => [...r.pods.flatMap((p) => p.players), ...r.unassigned].m
 /**
  * Adds someone who did not vote, straight into a pod (or the unassigned list
  * when `toCubeId` is null). `ctx.voterNames` are names already taken by ballots.
+ * `ctx.playerId` links them to a Discord player. `ctx.linkedIds` are player
+ * ids already on ballots, so one player can't be in a draft twice.
  */
 function addPlayer(results, name, toCubeId, ctx) {
   const r = clone(results);
@@ -188,6 +193,11 @@ function addPlayer(results, name, toCubeId, ctx) {
   const matchNames = (r.matches || []).flatMap((m) => [m.p1, m.p2]);
   const taken = new Set([...allNames(r), ...(ctx.voterNames || []), ...matchNames].map(lower));
   if (taken.has(lower(name))) throw new PodError(`${name} is already in this draft`);
+  if (ctx.playerId !== null && ctx.playerId !== undefined) {
+    const linked = [...Object.values(r.playerIds || {}), ...(ctx.linkedIds || [])].map(Number);
+    if (linked.includes(Number(ctx.playerId))) throw new PodError('That player is already in this draft');
+    r.playerIds = { ...(r.playerIds || {}), [name]: Number(ctx.playerId) };
+  }
   r.unassigned.push({ name, late: true, reason: 'Joined after voting' });
   r.edited = true;
   if (toCubeId === null || toCubeId === undefined) return recompute(r);
@@ -226,6 +236,10 @@ function renamePlayer(results, from, to, takenNames = []) {
     if (m.p2 === from) { m.p2 = to; found = true; }
   }
   if (!found) throw new PodError(`${from} is not in this draft`);
+  if (r.playerIds && from in r.playerIds) {
+    r.playerIds[to] = r.playerIds[from];
+    delete r.playerIds[from];
+  }
   return recompute(r);
 }
 
