@@ -170,3 +170,21 @@ test('removing a player keeps other seats and played results, drops their unplay
   assert.strictEqual(r.matches.length, 3);
   assert.throws(() => pods.addPlayer(r, gone, '1', { ...ctx(true), cubes: one }), /already in this draft/, 'name with a match record stays reserved');
 });
+
+test('renaming updates the seat and every match, and refuses clashes', () => {
+  const one = [cube(1, 2, 8)];
+  let r = pods.setTeamMode(assignPods(one, ballots), true, seq(0.1, 0.7, 0.3));
+  r = pods.generateTeamPairings(r, '1', 2);
+  const who = r.matches[0].p1;
+  r = pods.updateMatch(r, r.matches[0].id, { w1: 2, w2: 0 });
+  const before = r.matches.filter((m) => m.p1 === who || m.p2 === who).length;
+  const out = pods.renamePlayer(r, who, 'Zara');
+  assert.ok(out.pods[0].players.some((p) => p.name === 'Zara'));
+  assert.ok(!out.pods[0].players.some((p) => p.name === who));
+  assert.strictEqual(out.matches.filter((m) => m.p1 === 'Zara' || m.p2 === 'Zara').length, before);
+  assert.strictEqual(pods.standings(out, true)['1'].players.find((p) => p.name === 'Zara').points, 3);
+  const other = r.pods[0].players.find((p) => p.name !== who).name;
+  assert.throws(() => pods.renamePlayer(r, who, other.toUpperCase()), /already in this draft/);
+  assert.throws(() => pods.renamePlayer(r, who, 'Voter'.toLowerCase(), ['Voter']), /already in this draft/);
+  assert.doesNotThrow(() => pods.renamePlayer(r, who, who.toUpperCase()), 'capitals-only change is fine');
+});

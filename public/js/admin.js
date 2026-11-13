@@ -97,6 +97,11 @@
           voters.map((v) => h('span', { class: 'inline-flex items-center gap-1 rounded-full bg-slate-700 py-1 pl-2.5 pr-1 text-xs' },
             v.name, v.you && h('span', { class: 'text-slate-400' }, '(you)'),
             h('button', {
+              type: 'button', 'aria-label': `Rename ${v.name}`, title: 'Rename',
+              class: 'flex h-5 w-5 items-center justify-center rounded-full text-slate-300 hover:bg-sky-600 hover:text-white',
+              onclick: (e) => renamePlayer(v.name, act, e.currentTarget)
+            }, '✎'),
+            h('button', {
               type: 'button', 'aria-label': `Remove ${v.name}'s vote`, title: 'Remove this vote',
               class: 'flex h-5 w-5 items-center justify-center rounded-full text-slate-300 hover:bg-red-600 hover:text-white',
               onclick: (e) => {

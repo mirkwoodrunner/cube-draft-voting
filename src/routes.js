@@ -550,6 +550,53 @@ router.post('/admin/:adminToken/pods/move', wrap(async (req, res) => {
   await sendView(req, res);
 }));
 
+/**
+ * Renames a player: their ballot if they voted, and their seat and matches if
+ * pods are assigned. Works at any stage of the draft.
+ */
+router.post('/admin/:adminToken/players/rename', wrap(async (req, res) => {
+  const s = await sessionByAdminToken(req.params.adminToken);
+  const from = String(req.body.from || '');
+  const to = cleanText(req.body.to, 40, 'New name', { required: true });
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows } = await client.query('SELECT results FROM sessions WHERE id = $1 FOR UPDATE', [s.id]);
+    const { rows: votes } = await client.query('SELECT id, player_name FROM votes WHERE session_id = $1', [s.id]);
+    const ballot = votes.find((v) => v.player_name === from);
+    const otherVoters = votes.filter((v) => v !== ballot).map((v) => v.player_name);
+    if (otherVoters.some((n) => n.toLowerCase() === to.toLowerCase())) throw new HttpError(409, `${to} is already in this draft`);
+
+    let results = rows[0].results;
+    if (results) {
+      try {
+        results = pods.renamePlayer(results, from, to, otherVoters);
+      } catch (err) {
+        // A voter who isn't in the stored results (voted after pods were assigned) only needs their ballot renamed.
+        if (!(err instanceof pods.PodError) || !ballot || !/is not in this draft/.test(err.message)) {
+          throw err instanceof pods.PodError ? new HttpError(400, err.message) : err;
+        }
+        const names = [...results.pods.flatMap((p) => p.players), ...results.unassigned].map((p) => p.name)
+          .concat((results.matches || []).flatMap((m) => [m.p1, m.p2]));
+        if (names.some((n) => n.toLowerCase() === to.toLowerCase())) {
+          throw new HttpError(409, `${to} is already in this draft`);
+        }
+      }
+      await client.query('UPDATE sessions SET results = $2 WHERE id = $1', [s.id, JSON.stringify(results)]);
+    } else if (!ballot) {
+      throw new HttpError(404, `${from} is not in this draft`);
+    }
+    if (ballot) await client.query('UPDATE votes SET player_name = $2 WHERE id = $1', [ballot.id, to]);
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+  await sendView(req, res);
+}));
+
 // Someone who turned up after voting closed. They go straight into a pod without a ballot.
 router.post('/admin/:adminToken/pods/add', wrap(async (req, res) => {
   const s = await sessionByAdminToken(req.params.adminToken);

@@ -17,6 +17,14 @@ const smallSelect = (label, options, extra = '') => h('select', { 'aria-label': 
 const teamBadge = (t) => h('span', { class: `rounded-full px-2 py-0.5 text-[11px] font-semibold ${TEAM_STYLE[t]}` }, TEAM_NAMES[t]);
 const isPlayed = (m) => m.w1 !== null && m.w1 !== undefined;
 
+/** Asks for a new name and renames the player everywhere. Returns false if cancelled. */
+function renamePlayer(name, act, el) {
+  const to = prompt(`New name for ${name}`, name);
+  if (to === null || !to.trim() || to.trim() === name) return false;
+  act('/players/rename', el, { body: { from: name, to } });
+  return true;
+}
+
 /** "Move to" dropdown for one player. */
 function moveSelect(d, name, currentCubeId, act) {
   const options = [h('option', { value: '' }, 'Move to...')];
@@ -26,10 +34,15 @@ function moveSelect(d, name, currentCubeId, act) {
     options.push(h('option', { value: String(c.id) }, `${c.name} (${pod ? pod.players.length : 0}/${c.maxPlayers})`));
   }
   if (currentCubeId !== null) options.push(h('option', { value: '__out' }, 'Out of the pods'));
+  options.push(h('option', { value: '__rename' }, 'Rename...'));
   options.push(h('option', { value: '__remove' }, 'Remove from draft'));
   const sel = smallSelect(`Move ${name}`, options, 'max-w-[11rem]');
   sel.addEventListener('change', () => {
     if (!sel.value) return;
+    if (sel.value === '__rename') {
+      if (!renamePlayer(name, act, sel)) sel.value = '';
+      return;
+    }
     if (sel.value === '__remove') {
       const voted = d.voters.some((v) => v.name === name);
       if (confirm(`Remove ${name} from the draft?${voted ? ' Their ballot is deleted too.' : ''} Unplayed pairings for them are dropped. Results they already played are kept.`)) {

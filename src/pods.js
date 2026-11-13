@@ -206,6 +206,29 @@ function removePlayer(results, name, ctx) {
   return recompute(r);
 }
 
+/**
+ * Renames a player everywhere in the assignment: their seat and every match,
+ * played or not. `takenNames` are other names in the session (ballots) that
+ * the new name must not clash with. A change of capitals only is allowed.
+ */
+function renamePlayer(results, from, to, takenNames = []) {
+  const r = clone(results);
+  if (from === to) return r;
+  const matchNames = (r.matches || []).flatMap((m) => [m.p1, m.p2]);
+  const others = [...allNames(r), ...matchNames, ...takenNames].filter((n) => n !== from).map(lower);
+  if (others.includes(lower(to))) throw new PodError(`${to} is already in this draft`);
+  let found = false;
+  for (const p of [...r.pods.flatMap((x) => x.players), ...r.unassigned]) {
+    if (p.name === from) { p.name = to; found = true; }
+  }
+  for (const m of r.matches || []) {
+    if (m.p1 === from) { m.p1 = to; found = true; }
+    if (m.p2 === from) { m.p2 = to; found = true; }
+  }
+  if (!found) throw new PodError(`${from} is not in this draft`);
+  return recompute(r);
+}
+
 /** Moves a player to the other team in their pod. Their unplayed pairings in that pod are dropped. */
 function switchTeam(results, name) {
   const r = clone(results);
@@ -363,6 +386,7 @@ module.exports = {
   movePlayer,
   addPlayer,
   removePlayer,
+  renamePlayer,
   switchTeam,
   addMatch,
   updateMatch,
