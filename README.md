@@ -72,7 +72,8 @@ Players can log in with Discord from the vote page. Logging in is optional. Anyo
 - Claiming links those seats, matches and ballots to their account. They then count toward that player's record, alongside everything already tied to it, and the name drops off the unclaimed list.
 - A draft where the player is already linked under another name is skipped.
 - Only drafts with pods assigned can be claimed.
-- Anyone logged in can claim any unclaimed name. There is no approval step and no undo in the app yet.
+- Anyone logged in can claim any unclaimed name. There is no approval step.
+- The owner can undo a wrong claim or link. Logged in as the owner, a player's page shows Unlink on each draft. Unlinking takes that draft off their record and clears the link on their seat, matches and ballot there. The name goes back to the unclaimed list. Their Discord login no longer finds that ballot if voting reopens.
 
 Setup in the [Discord developer portal](https://discord.com/developers/applications). Create an application. Under OAuth2, add the redirect `https://cube-draft-voting.onrender.com/auth/discord/callback`. Copy the client ID and secret into the variables below. Only the `identify` scope is used.
 

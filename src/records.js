@@ -43,6 +43,12 @@ function unlinkedNames(results, votes, isLive = () => true) {
   return namesInResults(results).filter((n) => !linked.has(n) || !isLive(linked.get(n)));
 }
 
+/** The draft's results with every name linked to this player unlinked. */
+function unlinkPlayer(results, playerId) {
+  const playerIds = Object.fromEntries(Object.entries((results && results.playerIds) || {}).filter(([, id]) => Number(id) !== playerId));
+  return { ...results, playerIds };
+}
+
 /** How plain names are grouped across drafts: trimmed and ignoring capitals. */
 const nameKey = (name) => String(name || '').replace(/\s+/g, ' ').trim().toLowerCase();
 
@@ -97,4 +103,4 @@ function summarize(entries) {
   return t;
 }
 
-module.exports = { linkedNames, namesInResults, unlinkedNames, nameKey, draftEntry, summarize };
+module.exports = { linkedNames, namesInResults, unlinkedNames, unlinkPlayer, nameKey, draftEntry, summarize };

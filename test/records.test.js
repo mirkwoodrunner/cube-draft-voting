@@ -90,3 +90,9 @@ test('nameKey groups names ignoring capitals and spacing', () => {
   assert.strictEqual(records.nameKey('  Chris   S '), 'chris s');
   assert.strictEqual(records.nameKey('CHRIS s'), records.nameKey('chris S'));
 });
+
+test('unlinkPlayer removes only that player from the draft', () => {
+  const r = records.unlinkPlayer({ pods: [], playerIds: { Ann: 7, Bo: 8 } }, 7);
+  assert.deepStrictEqual(r.playerIds, { Bo: 8 });
+  assert.deepStrictEqual(records.unlinkPlayer({ pods: [] }, 7).playerIds, {});
+});

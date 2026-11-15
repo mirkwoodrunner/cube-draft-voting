@@ -36,7 +36,21 @@
         `${d.w}-${d.l}-${d.d}`,
         d.teamResult ? `team ${d.teamResult}` : null,
         d.name !== displayName ? `as ${d.name}` : null].filter(Boolean).join(' · ')));
+  // The owner can take a draft off a Discord player's record, for a wrong claim or link.
+  const unlinkBtn = (d) => h('button', { type: 'button', class: 'shrink-0 self-start rounded-lg bg-slate-700 px-2.5 py-1.5 text-xs font-semibold hover:bg-red-600', onclick: async (e) => {
+    const btn = e.currentTarget;
+    if (!(await confirmDialog(`"${d.title}" is taken off ${displayName}'s record. "${d.name}" goes back to an unclaimed name in that draft, and anyone can claim it.`, { title: 'Unlink this draft?', confirmLabel: 'Unlink' }))) return;
+    btn.disabled = true;
+    try {
+      await api(`/players/${encodeURIComponent(kind)}/unlink`, { method: 'POST', body: { sessionId: d.sessionId } });
+      location.reload();
+    } catch (err) {
+      alert(err.message);
+      btn.disabled = false;
+    }
+  } }, 'Unlink');
   const draftRow = (d) => {
+    if (plainName === null && data.isOwner) return h('li', { class: 'flex gap-3 py-2' }, draftLine(d), unlinkBtn(d));
     if (!canClaim) return h('li', { class: 'py-2' }, draftLine(d));
     const box = h('input', { type: 'checkbox', class: 'mt-1 h-4 w-4 shrink-0 accent-emerald-500', 'aria-label': `Claim ${d.title}` });
     box.checked = true;
@@ -109,6 +123,7 @@
           h('span', { class: 'text-slate-400' }, `${c.drafts}x`))))),
       card(
         h('h2', { class: 'font-semibold' }, 'Drafts'),
+        plainName === null && data.isOwner && h('p', { class: 'text-xs text-slate-400' }, 'You are logged in as the owner. Unlink a draft that was claimed or linked by mistake.'),
         drafts.length
           ? h('ul', { class: 'divide-y divide-slate-700 text-sm' }, drafts.map(draftRow))
           : h('p', { class: 'text-sm text-slate-400' }, 'No drafts yet.')),

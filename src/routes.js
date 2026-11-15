@@ -930,9 +930,38 @@ router.get('/players/:id', wrap(async (req, res) => {
   res.json({
     player: { ...discord.playerDto(rows[0]), since: rows[0].created_at },
     isMe: Boolean(me && me.id === id),
+    isOwner: owner.isOwner(req),
     totals: records.summarize(list.map((x) => x.entry)),
     drafts: list.map(draftDto)
   });
+}));
+
+/**
+ * The owner takes one draft off a player's record, for a wrong claim or a wrong link.
+ * Their seat and ballot in that draft become a plain name again, so it can be claimed.
+ */
+router.post('/players/:id/unlink', wrap(async (req, res) => {
+  requireOwner(req);
+  const id = Number(req.params.id);
+  const sessionId = Number(req.body.sessionId);
+  if (!Number.isInteger(id) || !Number.isInteger(sessionId)) throw new HttpError(400, 'Invalid player or draft');
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows } = await client.query('SELECT results FROM sessions WHERE id = $1 FOR UPDATE', [sessionId]);
+    if (!rows[0]) throw new HttpError(404, 'That draft no longer exists');
+    if (rows[0].results) {
+      await client.query('UPDATE sessions SET results = $2 WHERE id = $1', [sessionId, JSON.stringify(records.unlinkPlayer(rows[0].results, id))]);
+    }
+    await client.query('UPDATE votes SET player_id = NULL WHERE session_id = $1 AND player_id = $2', [sessionId, id]);
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+  res.json({ success: true });
 }));
 
 // ---------- site owner ----------
