@@ -73,9 +73,27 @@ function start(req, res) {
 }
 
 async function discordJson(url, init) {
-  const r = await fetch(url, { ...init, signal: AbortSignal.timeout(10000) });
-  if (!r.ok) throw new Error(`Discord returned ${r.status}`);
+  let r;
+  try {
+    r = await fetch(url, { ...init, signal: AbortSignal.timeout(10000) });
+  } catch (err) {
+    throw Object.assign(new Error(`network error: ${err.message}`), { userMsg: 'Discord could not be reached' });
+  }
+  if (!r.ok) {
+    const body = await r.text().catch(() => '');
+    let code = '';
+    try { code = JSON.parse(body).error || ''; } catch { /* not JSON */ }
+    throw Object.assign(new Error(`Discord returned ${r.status} ${body.slice(0, 300)}`), { userMsg: rejectMsg(r.status, code) });
+  }
   return r.json();
+}
+
+/** Plain words for the usual reasons Discord turns down the login. */
+function rejectMsg(status, code) {
+  if (code === 'invalid_client') return 'Discord rejected the client ID or secret. Check DISCORD_CLIENT_ID and DISCORD_CLIENT_SECRET';
+  if (code === 'invalid_grant') return 'Discord rejected the login code. Check that the redirect URL in the Discord portal matches this site exactly';
+  if (status === 429) return 'Discord is rate limiting this server. Wait a minute';
+  return `Discord refused the request (${status}${code ? ` ${code}` : ''})`;
 }
 
 /** Handles Discord's redirect back: checks state, reads the profile, saves the player and logs them in. */
@@ -113,7 +131,7 @@ async function callback(req, res) {
     user = await discordJson(`${DISCORD}/api/users/@me`, { headers: { Authorization: `Bearer ${tok.access_token}` } });
   } catch (err) {
     console.error('Discord login:', err.message);
-    return fail('Discord could not be reached');
+    return fail(err.userMsg || 'Discord could not be reached');
   }
   if (!user || !user.id) return fail('Discord did not return a profile');
 
