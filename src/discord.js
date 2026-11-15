@@ -17,6 +17,10 @@ const COOKIE = 'player';
 const STATE_COOKIE = 'discord_state';
 const MAX_AGE_S = 90 * 24 * 3600;
 const DISCORD = 'https://discord.com';
+// The server-to-server calls can go through a proxy (see discord-proxy/), because
+// Discord's firewall blocks some shared hosting IPs. The browser always goes to Discord itself.
+const apiBase = () => (process.env.DISCORD_API_BASE || DISCORD).replace(/\/+$/, '');
+const proxyHeaders = () => (process.env.DISCORD_PROXY_KEY ? { 'x-proxy-key': process.env.DISCORD_PROXY_KEY } : {});
 
 const clientId = () => process.env.DISCORD_CLIENT_ID || '';
 const clientSecret = () => process.env.DISCORD_CLIENT_SECRET || '';
@@ -75,7 +79,7 @@ function start(req, res) {
 async function discordJson(url, init) {
   let r;
   try {
-    r = await fetch(url, { ...init, signal: AbortSignal.timeout(10000) });
+    r = await fetch(url, { ...init, headers: { ...init.headers, ...proxyHeaders() }, signal: AbortSignal.timeout(10000) });
   } catch (err) {
     throw Object.assign(new Error(`network error: ${err.message}`), { userMsg: 'Discord could not be reached' });
   }
@@ -83,13 +87,15 @@ async function discordJson(url, init) {
     const body = await r.text().catch(() => '');
     let code = '';
     try { code = JSON.parse(body).error || ''; } catch { /* not JSON */ }
-    throw Object.assign(new Error(`Discord returned ${r.status} ${body.slice(0, 300)}`), { userMsg: rejectMsg(r.status, code) });
+    const blocked = r.status === 429 && /^\s*</.test(body);
+    throw Object.assign(new Error(`Discord returned ${r.status} ${body.slice(0, 300)}`), { userMsg: rejectMsg(r.status, code, blocked) });
   }
   return r.json();
 }
 
 /** Plain words for the usual reasons Discord turns down the login. */
-function rejectMsg(status, code) {
+function rejectMsg(status, code, blocked) {
+  if (blocked) return "Discord's firewall is blocking this server's network address. Set up the Discord proxy (see the README)";
   if (code === 'invalid_client') return 'Discord rejected the client ID or secret. Check DISCORD_CLIENT_ID and DISCORD_CLIENT_SECRET';
   if (code === 'invalid_grant') return 'Discord rejected the login code. Check that the redirect URL in the Discord portal matches this site exactly';
   if (status === 429) return 'Discord is rate limiting this server. Wait a minute';
@@ -117,7 +123,7 @@ async function callback(req, res) {
 
   let user;
   try {
-    const tok = await discordJson(`${DISCORD}/api/oauth2/token`, {
+    const tok = await discordJson(`${apiBase()}/api/oauth2/token`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({
@@ -128,7 +134,7 @@ async function callback(req, res) {
         redirect_uri: redirectUri(req)
       })
     });
-    user = await discordJson(`${DISCORD}/api/users/@me`, { headers: { Authorization: `Bearer ${tok.access_token}` } });
+    user = await discordJson(`${apiBase()}/api/users/@me`, { headers: { Authorization: `Bearer ${tok.access_token}` } });
   } catch (err) {
     console.error('Discord login:', err.message);
     return fail(err.userMsg || 'Discord could not be reached');
