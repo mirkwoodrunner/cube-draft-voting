@@ -77,6 +77,14 @@ Players can log in with Discord from the vote page. Logging in is optional. Anyo
 
 Setup in the [Discord developer portal](https://discord.com/developers/applications). Create an application. Under OAuth2, add the redirect `https://cube-draft-voting.onrender.com/auth/discord/callback`. Copy the client ID and secret into the variables below. Only the `identify` scope is used.
 
+#### If login fails with "Discord's firewall is blocking this server"
+
+Discord sometimes blocks Render's shared IP addresses. The fix is to send the two login calls through a free Cloudflare Worker.
+
+1. In Cloudflare, go to Workers & Pages, create a Worker, and replace its code with `discord-proxy/worker.js`. Deploy it.
+2. In the Worker's Settings, under Variables and Secrets, add a secret named `PROXY_KEY` set to a long random string.
+3. In Render, set `DISCORD_API_BASE` to the Worker's URL (like `https://discord-proxy.yourname.workers.dev`) and `DISCORD_PROXY_KEY` to the same random string.
+
 ## Assignment engine (`src/borda.js`)
 
 A cube ranked r-th of K is worth K - r + 1 points. The engine chooses which cubes fire and who plays in each, in this priority:
@@ -104,6 +112,8 @@ Tables are created or upgraded automatically on startup. Existing sessions from 
 | `ADMIN_PASSWORD` | Turns on the owner page at `/owner`. Off when unset |
 | `DISCORD_CLIENT_ID` | Turns on Discord login, with the secret. Off when unset |
 | `DISCORD_CLIENT_SECRET` | From the Discord developer portal |
+| `DISCORD_API_BASE` | Optional. URL of the Discord proxy Worker. Defaults to `https://discord.com` |
+| `DISCORD_PROXY_KEY` | Optional. Shared key sent to the proxy Worker |
 | `DISCORD_REDIRECT_URI` | Optional. Defaults to `/auth/discord/callback` on the host the request came in on |
 | `CUBECOBRA_BASE_URL` | Override for tests. Defaults to `https://cubecobra.com` |
 
@@ -115,6 +125,7 @@ Tables are created or upgraded automatically on startup. Existing sessions from 
 - `src/cubecobra.js` Cube Cobra scraper
 - `src/borda.js` assignment engine
 - `src/discord.js` Discord login
+- `discord-proxy/worker.js` optional Cloudflare Worker for Discord's login calls
 - `src/records.js` player records across drafts, and unclaimed names
 - `src/pods.js` pod edits, teams, matches and standings
 - `src/owner.js` owner login
