@@ -75,3 +75,24 @@ test('safeNext only allows same-site paths', () => {
   assert.strictEqual(safeNext('/vote/abc'), '/vote/abc');
   for (const bad of ['//evil.com', '/\\evil.com', 'https://evil.com', '', undefined, '/a b']) assert.strictEqual(safeNext(bad), '/', String(bad));
 });
+
+test('unlinkedNames lists seated, unassigned and match names nobody has claimed', () => {
+  let r = base();
+  r = { ...r, unassigned: [{ name: 'Gus' }] };
+  r = pods.addMatch(r, { cubeId: '1', round: 1, p1: 'Ann', p2: 'Bo', w1: 2, w2: 0 }, false);
+  const names = records.unlinkedNames(r, [{ player_name: 'Cy', player_id: 4 }]).sort();
+  assert.deepStrictEqual(names, ['Bo', 'Di', 'Gus']);
+  // A link to a deleted profile counts as unclaimed again.
+  assert.ok(records.unlinkedNames(r, [], (id) => id !== 7).includes('Ann'));
+});
+
+test('nameKey groups names ignoring capitals and spacing', () => {
+  assert.strictEqual(records.nameKey('  Chris   S '), 'chris s');
+  assert.strictEqual(records.nameKey('CHRIS s'), records.nameKey('chris S'));
+});
+
+test('unlinkPlayer removes only that player from the draft', () => {
+  const r = records.unlinkPlayer({ pods: [], playerIds: { Ann: 7, Bo: 8 } }, 7);
+  assert.deepStrictEqual(r.playerIds, { Bo: 8 });
+  assert.deepStrictEqual(records.unlinkPlayer({ pods: [] }, 7).playerIds, {});
+});

@@ -24,6 +24,34 @@ function linkedNames(results, votes) {
   return out;
 }
 
+/** Every name that has a seat, sits unassigned, or is in a match in a draft. */
+function namesInResults(results) {
+  if (!results) return [];
+  const names = new Set();
+  for (const p of results.pods || []) for (const m of p.players) names.add(m.name);
+  for (const u of results.unassigned || []) names.add(u.name);
+  for (const m of results.matches || []) { names.add(m.p1); names.add(m.p2); }
+  return [...names].filter((n) => typeof n === 'string' && n);
+}
+
+/**
+ * The names in a draft that no Discord player has claimed. `isLive(id)` says whether a
+ * player still exists, so names left behind by a deleted profile can be claimed again.
+ */
+function unlinkedNames(results, votes, isLive = () => true) {
+  const linked = linkedNames(results, votes);
+  return namesInResults(results).filter((n) => !linked.has(n) || !isLive(linked.get(n)));
+}
+
+/** The draft's results with every name linked to this player unlinked. */
+function unlinkPlayer(results, playerId) {
+  const playerIds = Object.fromEntries(Object.entries((results && results.playerIds) || {}).filter(([, id]) => Number(id) !== playerId));
+  return { ...results, playerIds };
+}
+
+/** How plain names are grouped across drafts: trimmed and ignoring capitals. */
+const nameKey = (name) => String(name || '').replace(/\s+/g, ' ').trim().toLowerCase();
+
 /**
  * One player's part in one draft, or null if they never sat in a pod or
  * played a match there. `teamResult` is 'won', 'lost' or 'tied' for a team
@@ -75,4 +103,4 @@ function summarize(entries) {
   return t;
 }
 
-module.exports = { linkedNames, draftEntry, summarize };
+module.exports = { linkedNames, namesInResults, unlinkedNames, unlinkPlayer, nameKey, draftEntry, summarize };
