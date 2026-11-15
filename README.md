@@ -38,7 +38,9 @@ Switching the format after pods are assigned re-splits or removes the teams and 
 
 ### Cube library
 
-Every cube has a "Save to my cube library" box, ticked by default. Saved cubes show up in an "Add a saved cube" picker on the create page and the cube editor. Saving the same cube again updates its saved details. Only the owner can remove cubes from the library.
+Every cube has a "Save to my cube library" box. It is ticked by default for new cubes and for cubes picked from the library. A cube already in a draft but not in the library starts unticked in the cube editor. Saving happens when the draft is created or its cubes are saved. Saved cubes show up in an "Add a saved cube" picker on the create page and the cube editor. Saving the same cube again updates its saved details.
+
+The owner can also add a cube straight to the library from the owner page without making a draft, and remove saved cubes there. Removing a cube from the library does not change drafts that already use it. Only the owner can add cubes this way or remove them.
 
 ### Owner page
 

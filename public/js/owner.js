@@ -72,6 +72,71 @@
         } }, 'Remove')));
   }
 
+  /** Adds a cube to the library without making a draft. Uses the same lookup as the cube editor. */
+  function addCubeForm(refresh) {
+    const url = h('input', { type: 'text', inputmode: 'url', autocapitalize: 'off', required: true, placeholder: 'https://cubecobra.com/cube/overview/...', class: cubeInputCls });
+    const fetchBtn = h('button', { type: 'button', class: 'shrink-0 rounded-lg bg-sky-600 px-3 py-2 text-sm font-medium text-white hover:bg-sky-500 disabled:opacity-50' }, 'Fetch details');
+    const status = h('p', { class: 'text-xs text-slate-400' });
+    const name = h('input', { maxlength: 200, class: cubeInputCls });
+    const author = h('input', { maxlength: 100, class: cubeInputCls });
+    const cards = h('input', { type: 'number', min: 0, class: cubeInputCls });
+    const min = h('input', { type: 'number', min: 1, max: 64, value: 6, required: true, class: cubeInputCls });
+    const max = h('input', { type: 'number', min: 1, max: 64, value: 8, required: true, class: cubeInputCls });
+    const details = h('div', { class: 'hidden grid grid-cols-2 gap-3' },
+      cubeField('Cube name', name, 'col-span-2'), cubeField('Author', author), cubeField('Card count', cards));
+    const err = h('p', { class: 'hidden text-sm text-red-300', role: 'alert' });
+    const go = h('button', { class: 'rounded-xl bg-emerald-600 px-4 py-2 font-semibold text-white hover:bg-emerald-500 disabled:opacity-50' }, 'Add to library');
+    let fetched = null;
+
+    async function lookup() {
+      const value = url.value.trim();
+      if (!value || fetched === value) return;
+      fetchBtn.disabled = true;
+      status.className = 'text-xs text-slate-400';
+      status.textContent = 'Looking up cube...';
+      try {
+        const { cube } = await api('/cubecobra/preview', { method: 'POST', body: { url: value } });
+        name.value = cube.name || '';
+        author.value = cube.author || '';
+        cards.value = cube.cardCount ?? '';
+        fetched = value;
+        status.className = 'text-xs text-emerald-400';
+        status.textContent = 'Found it. You can correct anything below.';
+      } catch (ex) {
+        status.className = 'text-xs text-amber-300';
+        status.textContent = `${ex.message}. You can fill in the details yourself below.`;
+      }
+      details.classList.remove('hidden');
+      fetchBtn.disabled = false;
+    }
+    fetchBtn.addEventListener('click', lookup);
+    url.addEventListener('change', lookup);
+
+    return h('form', { class: 'space-y-3 rounded-lg bg-slate-900/50 p-3', onsubmit: async (e) => {
+      e.preventDefault();
+      go.disabled = true;
+      err.classList.add('hidden');
+      try {
+        await api('/library', { method: 'POST', body: {
+          url: url.value.trim(),
+          minPlayers: Number(min.value),
+          maxPlayers: Number(max.value),
+          ...(name.value.trim() ? { name: name.value, author: author.value, cardCount: cards.value === '' ? null : Number(cards.value) } : {})
+        } });
+        refresh();
+      } catch (ex) {
+        err.textContent = ex.message;
+        err.classList.remove('hidden');
+        go.disabled = false;
+      }
+    } },
+      h('div', { class: 'text-sm font-semibold text-slate-200' }, 'Add a cube'),
+      h('div', { class: 'flex gap-2' }, url, fetchBtn),
+      status, details,
+      h('div', { class: 'grid grid-cols-2 gap-3' }, cubeField('Min players', min), cubeField('Max players', max)),
+      err, go);
+  }
+
   async function load() {
     let me;
     try { me = await api('/owner/me'); } catch (ex) { return showError(app, ex.message); }
@@ -94,7 +159,8 @@
           sessions.length ? sessions.map((s) => sessionRow(s, load)) : h('p', { class: 'text-sm text-slate-400' }, 'No drafts yet.')),
         card(
           h('h2', { class: 'font-semibold' }, `Cube library (${cubes.length})`),
-          h('p', { class: 'text-xs text-slate-400' }, 'Cubes saved here show up in "Add a saved cube" when you set up a draft. Tick "Save to my cube library" on a cube to add it.'),
+          h('p', { class: 'text-xs text-slate-400' }, 'Cubes saved here show up in "Add a saved cube" when you set up a draft. Add one below, or tick "Save to my cube library" on a cube in any draft. Adding a cube that is already saved updates its details.'),
+          addCubeForm(load),
           cubes.length ? cubes.map((c) => libraryRow(c, load)) : h('p', { class: 'text-sm text-slate-400' }, 'No saved cubes yet.'))));
   }
 

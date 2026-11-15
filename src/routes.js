@@ -76,8 +76,7 @@ function cleanInt(v, fallback, label, min, max) {
   return n;
 }
 
-async function resolveCube(input, index) {
-  const label = `Cube ${index + 1}`;
+async function resolveCube(input, index, label = `Cube ${index + 1}`) {
   if (!input || typeof input !== 'object') throw new HttpError(400, `${label} is invalid`);
 
   let parsed;
@@ -115,7 +114,7 @@ async function resolveCube(input, index) {
 async function resolveCubeList(input, emptyMessage) {
   if (!Array.isArray(input) || input.length < 1) throw new HttpError(400, emptyMessage);
   if (input.length > MAX_CUBES) throw new HttpError(400, `A session can have at most ${MAX_CUBES} cubes`);
-  const cubes = await Promise.all(input.map(resolveCube));
+  const cubes = await Promise.all(input.map((c, i) => resolveCube(c, i)));
   const seen = new Set();
   for (const c of cubes) {
     if (seen.has(c.cubecobraId)) throw new HttpError(400, `The cube "${c.name}" was added more than once`);
@@ -714,6 +713,16 @@ const savedCubeDto = (c) => ({
 router.get('/library', wrap(async (req, res) => {
   const { rows } = await pool.query('SELECT * FROM saved_cubes ORDER BY lower(name), id');
   res.json({ cubes: rows.map(savedCubeDto), canDelete: owner.isOwner(req) });
+}));
+
+// The owner adds a cube straight to the library without making a draft. Adding one that is
+// already saved updates its details, the same as saving it from a draft.
+router.post('/library', wrap(async (req, res) => {
+  requireOwner(req);
+  const cube = await resolveCube({ ...(req.body || {}), save: true }, 0, 'Cube');
+  await saveToLibrary(pool, [cube]);
+  const { rows } = await pool.query('SELECT * FROM saved_cubes WHERE cubecobra_id = $1', [cube.cubecobraId]);
+  res.status(201).json({ cube: savedCubeDto(rows[0]) });
 }));
 
 router.delete('/library/:id', wrap(async (req, res) => {
