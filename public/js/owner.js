@@ -51,8 +51,9 @@
         ? h('div', { class: 'flex shrink-0 gap-2' },
           h('a', { href: s.adminUrl, class: 'rounded-lg bg-emerald-600 px-3 py-2 text-sm font-semibold hover:bg-emerald-500' }, 'Open'),
           h('button', { type: 'button', class: 'rounded-lg bg-slate-700 px-3 py-2 text-sm font-semibold hover:bg-red-600', onclick: async (e) => {
-            if (!confirm(`Delete "${s.title}"? Its ballots, pods and match results are removed for good.`)) return;
-            e.currentTarget.disabled = true;
+            const btn = e.currentTarget;
+            if (!(await confirmDialog(`"${s.title}" and its ballots, pods and match results are removed for good.`, { title: 'Delete this draft?', confirmLabel: 'Delete' }))) return;
+            btn.disabled = true;
             try { await api(`/admin/${s.adminUrl.split('/').pop()}`, { method: 'DELETE' }); } catch (ex) { alert(ex.message); }
             refresh();
           } }, 'Delete'))
@@ -60,16 +61,63 @@
   }
 
   function libraryRow(c, refresh) {
-    return h('div', { class: 'flex items-start justify-between gap-3 rounded-lg bg-slate-900/50 p-3' },
-      cubeInfo(c, new Set()),
-      h('div', { class: 'flex shrink-0 items-center gap-3' },
-        h('span', { class: 'text-xs text-slate-400' }, `${c.minPlayers}-${c.maxPlayers} players`),
-        h('button', { type: 'button', class: 'rounded-lg bg-slate-700 px-2.5 py-1.5 text-xs font-semibold hover:bg-red-600', onclick: async (e) => {
-          if (!confirm(`Remove ${c.name} from the library? Drafts that already use it are not changed.`)) return;
-          e.currentTarget.disabled = true;
-          try { await api(`/library/${c.savedId}`, { method: 'DELETE' }); } catch (ex) { alert(ex.message); }
+    const row = h('div', { class: 'rounded-lg bg-slate-900/50 p-3' });
+    const smallBtn = (label, hover, onclick) =>
+      h('button', { type: 'button', class: `rounded-lg bg-slate-700 px-2.5 py-1.5 text-xs font-semibold ${hover}`, onclick }, label);
+
+    function view() {
+      row.replaceChildren(h('div', { class: 'flex items-start justify-between gap-3' },
+        cubeInfo(c, new Set()),
+        h('div', { class: 'flex shrink-0 items-center gap-2' },
+          h('span', { class: 'mr-1 text-xs text-slate-400' }, `${c.minPlayers}-${c.maxPlayers} players`),
+          smallBtn('Edit', 'hover:bg-slate-600', edit),
+          smallBtn('Remove', 'hover:bg-red-600', async (e) => {
+            const btn = e.currentTarget;
+            if (!(await confirmDialog(`${c.name} is removed from the library. Drafts that already use it are not changed.`, { title: 'Remove this cube?', confirmLabel: 'Remove' }))) return;
+            btn.disabled = true;
+            try { await api(`/library/${c.savedId}`, { method: 'DELETE' }); } catch (ex) { alert(ex.message); }
+            refresh();
+          }))));
+    }
+
+    // The Cube Cobra link identifies the cube, so it is not editable. To use another link, add it as a new cube.
+    function edit() {
+      const name = h('input', { maxlength: 200, required: true, value: c.name, class: cubeInputCls });
+      const author = h('input', { maxlength: 100, value: c.author || '', class: cubeInputCls });
+      const cards = h('input', { type: 'number', min: 0, value: c.cardCount ?? '', class: cubeInputCls });
+      const min = h('input', { type: 'number', min: 1, max: 64, required: true, value: c.minPlayers, class: cubeInputCls });
+      const max = h('input', { type: 'number', min: 1, max: 64, required: true, value: c.maxPlayers, class: cubeInputCls });
+      const err = h('p', { class: 'hidden text-sm text-red-300', role: 'alert' });
+      const save = h('button', { class: 'rounded-lg bg-emerald-600 px-3 py-2 text-sm font-semibold text-white hover:bg-emerald-500 disabled:opacity-50' }, 'Save');
+      row.replaceChildren(h('form', { class: 'space-y-3', onsubmit: async (e) => {
+        e.preventDefault();
+        save.disabled = true;
+        err.classList.add('hidden');
+        try {
+          await api(`/library/${c.savedId}`, { method: 'PUT', body: {
+            name: name.value, author: author.value, cardCount: cards.value === '' ? null : Number(cards.value),
+            minPlayers: Number(min.value), maxPlayers: Number(max.value)
+          } });
           refresh();
-        } }, 'Remove')));
+        } catch (ex) {
+          err.textContent = ex.message;
+          err.classList.remove('hidden');
+          save.disabled = false;
+        }
+      } },
+        h('div', { class: 'text-sm font-semibold text-slate-200' }, `Edit ${c.name}`),
+        c.url && h('a', { href: c.url, target: '_blank', rel: 'noopener noreferrer', class: 'block break-all text-xs text-sky-400 hover:underline' }, c.url),
+        h('div', { class: 'grid grid-cols-2 gap-3' },
+          cubeField('Cube name', name, 'col-span-2'), cubeField('Author', author), cubeField('Card count', cards),
+          cubeField('Min players', min), cubeField('Max players', max)),
+        err,
+        h('div', { class: 'flex gap-2' }, save,
+          h('button', { type: 'button', class: 'rounded-lg bg-slate-700 px-3 py-2 text-sm font-semibold hover:bg-slate-600', onclick: view }, 'Cancel'))));
+      name.focus();
+    }
+
+    view();
+    return row;
   }
 
   /** Adds a cube to the library without making a draft. Uses the same lookup as the cube editor. */

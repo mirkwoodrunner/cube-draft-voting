@@ -23,6 +23,8 @@ app.get('/admin/:adminToken', page('admin.html'));
 app.get('/owner', page('owner.html'));
 app.get('/players', page('players.html'));
 app.get('/players/:id', page('player.html'));
+app.get('/players/name/:name', page('player.html'));
+app.get('/library', page('library.html'));
 
 // Discord login. Off unless DISCORD_CLIENT_ID and DISCORD_CLIENT_SECRET are set.
 const authOff = (req, res) => res.status(404).type('text').send('Discord login is turned off on this server');

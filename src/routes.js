@@ -725,6 +725,29 @@ router.post('/library', wrap(async (req, res) => {
   res.status(201).json({ cube: savedCubeDto(rows[0]) });
 }));
 
+// The owner corrects a saved cube's details. The Cube Cobra link stays the same, since it is what
+// identifies the cube. Drafts that already use the cube are not changed.
+router.put('/library/:id', wrap(async (req, res) => {
+  requireOwner(req);
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) throw new HttpError(400, 'Invalid cube');
+  const b = req.body || {};
+  const name = cleanText(b.name, 200, 'Cube name', { required: true });
+  const author = cleanText(b.author, 100, 'Author');
+  const count = b.cardCount === null || b.cardCount === undefined || b.cardCount === '' ? null : Number(b.cardCount);
+  if (count !== null && (!Number.isInteger(count) || count < 0 || count > 100000)) throw new HttpError(400, 'Card count must be a whole number');
+  const minPlayers = cleanInt(b.minPlayers, 6, 'Minimum players', 1, MAX_PLAYERS_PER_POD);
+  const maxPlayers = cleanInt(b.maxPlayers, 8, 'Maximum players', 1, MAX_PLAYERS_PER_POD);
+  if (minPlayers > maxPlayers) throw new HttpError(400, 'Minimum players cannot exceed maximum players');
+  const { rows } = await pool.query(
+    `UPDATE saved_cubes SET name = $2, author = $3, card_count = $4, min_players = $5, max_players = $6
+     WHERE id = $1 RETURNING *`,
+    [id, name, author, count, minPlayers, maxPlayers]
+  );
+  if (!rows[0]) throw new HttpError(404, 'That cube is no longer in the library');
+  res.json({ cube: savedCubeDto(rows[0]) });
+}));
+
 router.delete('/library/:id', wrap(async (req, res) => {
   requireOwner(req);
   const id = Number(req.params.id);
@@ -735,17 +758,23 @@ router.delete('/library/:id', wrap(async (req, res) => {
 
 // ---------- players and public records ----------
 
-/** Every draft with pods that involves one of these players, as [{ session, entry, playerId }]. */
-async function draftEntries(playerId = null) {
-  const { rows: sessions } = await pool.query(`
+/** Every draft with pods, newest first, with the ballots that are linked to a Discord player. */
+async function assignedSessions(db = pool, { ids = null, lock = false } = {}) {
+  const { rows } = await db.query(`
     SELECT s.id, s.title, s.public_id, s.team_mode, s.created_at, s.assigned_at, s.results,
       COALESCE((SELECT json_agg(json_build_object('player_name', v.player_name, 'player_id', v.player_id))
         FROM votes v WHERE v.session_id = s.id AND v.player_id IS NOT NULL), '[]') AS votes
     FROM sessions s
-    WHERE s.status = 'assigned' AND s.results IS NOT NULL
-    ORDER BY COALESCE(s.assigned_at, s.created_at) DESC, s.id DESC`);
+    WHERE s.status = 'assigned' AND s.results IS NOT NULL AND ($1::int[] IS NULL OR s.id = ANY($1::int[]))
+    ORDER BY COALESCE(s.assigned_at, s.created_at) DESC, s.id DESC
+    ${lock ? 'FOR UPDATE OF s' : ''}`, [ids]);
+  return rows;
+}
+
+/** Every draft with pods that involves one of these players, as [{ session, entry, playerId }]. */
+async function draftEntries(playerId = null) {
   const out = [];
-  for (const s of sessions) {
+  for (const s of await assignedSessions()) {
     for (const [name, id] of records.linkedNames(s.results, s.votes)) {
       if (playerId !== null && id !== playerId) continue;
       const entry = records.draftEntry(s.results, name, s.team_mode);
@@ -754,6 +783,38 @@ async function draftEntries(playerId = null) {
   }
   return out;
 }
+
+/**
+ * Names that played without a Discord login, grouped across drafts ignoring capitals,
+ * as [{ session, entry, key }]. Pass `key` for one name.
+ */
+async function livePlayerIds(db = pool) {
+  const { rows } = await db.query('SELECT id FROM players');
+  const ids = new Set(rows.map((r) => r.id));
+  return (id) => ids.has(id);
+}
+
+async function unclaimedEntries(key = null) {
+  const out = [];
+  const isLive = await livePlayerIds();
+  for (const s of await assignedSessions()) {
+    for (const name of records.unlinkedNames(s.results, s.votes, isLive)) {
+      const k = records.nameKey(name);
+      if (!k || (key !== null && k !== key)) continue;
+      const entry = records.draftEntry(s.results, name, s.team_mode);
+      if (entry) out.push({ session: s, entry, key: k });
+    }
+  }
+  return out;
+}
+
+const draftDto = ({ session: s, entry }) => ({
+  sessionId: s.id,
+  title: s.title,
+  date: s.assigned_at || s.created_at,
+  teamMode: s.team_mode,
+  ...entry
+});
 
 const AUTH_OFF = 'Discord login is turned off on this server';
 
@@ -782,13 +843,81 @@ router.get('/players', wrap(async (req, res) => {
   const { rows } = await pool.query('SELECT * FROM players ORDER BY lower(display_name), id');
   const byPlayer = new Map(rows.map((p) => [p.id, []]));
   for (const { entry, playerId } of await draftEntries()) if (byPlayer.has(playerId)) byPlayer.get(playerId).push(entry);
+  const byName = new Map();
+  for (const { entry, key } of await unclaimedEntries()) {
+    if (!byName.has(key)) byName.set(key, { name: entry.name, entries: [] });
+    byName.get(key).entries.push(entry);
+  }
+  const totals = (entries) => {
+    const t = records.summarize(entries);
+    delete t.cubes;
+    return t;
+  };
   res.json({
-    players: rows.map((p) => {
-      const t = records.summarize(byPlayer.get(p.id));
-      delete t.cubes;
-      return { ...discord.playerDto(p), ...t };
-    })
+    players: rows.map((p) => ({ ...discord.playerDto(p), ...totals(byPlayer.get(p.id)) })),
+    unclaimed: [...byName.values()]
+      .map((u) => ({ name: u.name, ...totals(u.entries) }))
+      .sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()))
   });
+}));
+
+// A name that played without logging in. Its drafts can be claimed by a logged-in player.
+router.get('/players/name/:name', wrap(async (req, res) => {
+  const key = records.nameKey(req.params.name);
+  const list = key ? await unclaimedEntries(key) : [];
+  if (!list.length) throw new HttpError(404, 'No unclaimed drafts under that name');
+  const me = await discord.currentPlayer(req);
+  res.json({
+    name: list[0].entry.name,
+    me: me ? discord.playerDto(me) : null,
+    loginEnabled: discord.enabled(),
+    totals: records.summarize(list.map((x) => x.entry)),
+    drafts: list.map(draftDto)
+  });
+}));
+
+/**
+ * The logged-in player claims the drafts they played under a plain name. Those seats and
+ * matches are linked to their account, so they count toward their record. A draft where
+ * they are already linked under another name is skipped, since that seat is someone else.
+ */
+router.post('/players/name/:name/claim', wrap(async (req, res) => {
+  if (!discord.enabled()) throw new HttpError(403, AUTH_OFF);
+  const me = await discord.currentPlayer(req);
+  if (!me) throw new HttpError(401, 'Log in with Discord first');
+  const key = records.nameKey(req.params.name);
+  const ids = Array.isArray(req.body.sessionIds) ? req.body.sessionIds.map(Number).filter(Number.isInteger) : null;
+  if (!key) throw new HttpError(400, 'Invalid name');
+  if (ids && !ids.length) throw new HttpError(400, 'Pick at least one draft to claim');
+
+  const client = await pool.connect();
+  const claimed = [];
+  const skipped = [];
+  try {
+    await client.query('BEGIN');
+    const isLive = await livePlayerIds(client);
+    for (const s of await assignedSessions(client, { ids, lock: true })) {
+      const name = records.unlinkedNames(s.results, s.votes, isLive).find((n) => records.nameKey(n) === key);
+      if (!name || !records.draftEntry(s.results, name, s.team_mode)) continue;
+      const linked = records.linkedNames(s.results, s.votes);
+      if ([...linked.values()].includes(me.id)) {
+        skipped.push(s.title);
+        continue;
+      }
+      const results = { ...s.results, playerIds: { ...(s.results.playerIds || {}), [name]: me.id } };
+      await client.query('UPDATE sessions SET results = $2 WHERE id = $1', [s.id, JSON.stringify(results)]);
+      await client.query('UPDATE votes SET player_id = $3 WHERE session_id = $1 AND player_name = $2 AND player_id IS NULL', [s.id, name, me.id]);
+      claimed.push(s.title);
+    }
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+  if (!claimed.length && !skipped.length) throw new HttpError(404, 'Those drafts are no longer unclaimed');
+  res.json({ claimed, skipped, playerId: me.id });
 }));
 
 router.get('/players/:id', wrap(async (req, res) => {
@@ -802,12 +931,7 @@ router.get('/players/:id', wrap(async (req, res) => {
     player: { ...discord.playerDto(rows[0]), since: rows[0].created_at },
     isMe: Boolean(me && me.id === id),
     totals: records.summarize(list.map((x) => x.entry)),
-    drafts: list.map(({ session: s, entry }) => ({
-      title: s.title,
-      date: s.assigned_at || s.created_at,
-      teamMode: s.team_mode,
-      ...entry
-    }))
+    drafts: list.map(draftDto)
   });
 }));
 

@@ -40,7 +40,13 @@ Switching the format after pods are assigned re-splits or removes the teams and 
 
 Every cube has a "Save to my cube library" box. It is ticked by default for new cubes and for cubes picked from the library. A cube already in a draft but not in the library starts unticked in the cube editor. Saving happens when the draft is created or its cubes are saved. Saved cubes show up in an "Add a saved cube" picker on the create page and the cube editor. Saving the same cube again updates its saved details.
 
-The owner can also add a cube straight to the library from the owner page without making a draft, and remove saved cubes there. Removing a cube from the library does not change drafts that already use it. Only the owner can add cubes this way or remove them.
+The owner can also add a cube straight to the library from the owner page without making a draft, edit a saved cube's name, author, card count and player range, and remove saved cubes there. The Cube Cobra link can't be edited, since it identifies the cube. Add the new link as a new cube instead. Removing asks for confirmation first. Editing or removing a cube in the library does not change drafts that already use it. Only the owner can add, edit or remove cubes this way.
+
+Anyone can see the library at `/library`, without the edit and remove buttons.
+
+### Menu
+
+Every page has a menu button at the top right. It links to New draft, Cube library, Players, the logged-in player's own page, and the owner page in smaller text at the bottom.
 
 ### Owner page
 
@@ -56,7 +62,17 @@ Players can log in with Discord from the vote page. Logging in is optional. Anyo
 - Records only count drafts with pods assigned where the player voted or was added while linked. Drafts from before Discord login, and anyone who didn't log in, stay as plain names.
 - Renaming or removing a player keeps the link, so matches they already played still count.
 - On the dashboard, linked players show their Discord avatar. "Add a player who joined after voting" can link the new player to someone who has logged in before.
-- A player can delete their profile from their own page. Their name stays in past drafts as a plain name.
+- A player can delete their profile from their own page. Their name stays in past drafts as a plain name, and can be claimed again.
+
+#### Claiming drafts played without logging in
+
+`/players` also lists names that played without logging in, under "Not claimed yet". Names are grouped across drafts ignoring capitals and extra spaces, so "Chris" and "chris" share one page at `/players/name/:name`.
+
+- A logged-in player can open that page and claim it. Each draft has a tick box so they can leave out drafts that were someone else with the same name.
+- Claiming links those seats, matches and ballots to their account. They then count toward that player's record, alongside everything already tied to it, and the name drops off the unclaimed list.
+- A draft where the player is already linked under another name is skipped.
+- Only drafts with pods assigned can be claimed.
+- Anyone logged in can claim any unclaimed name. There is no approval step and no undo in the app yet.
 
 Setup in the [Discord developer portal](https://discord.com/developers/applications). Create an application. Under OAuth2, add the redirect `https://cube-draft-voting.onrender.com/auth/discord/callback`. Copy the client ID and secret into the variables below. Only the `identify` scope is used.
 
@@ -98,7 +114,7 @@ Tables are created or upgraded automatically on startup. Existing sessions from 
 - `src/cubecobra.js` Cube Cobra scraper
 - `src/borda.js` assignment engine
 - `src/discord.js` Discord login
-- `src/records.js` player records across drafts
+- `src/records.js` player records across drafts, and unclaimed names
 - `src/pods.js` pod edits, teams, matches and standings
 - `src/owner.js` owner login
 - `public/` Tailwind pages and scripts
