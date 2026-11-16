@@ -300,7 +300,7 @@
 
     if (!editing && (cubeKey !== keys.cubes || !slots.cubes.firstChild)) { keys.cubes = cubeKey; drawCubes(); }
 
-    const resKey = JSON.stringify([results, cubeKey, session.teamMode, d.photos, d.linked]);
+    const resKey = JSON.stringify([results, cubeKey, session.teamMode, d.photos, d.deckNames, d.linked]);
     // Players report matches from their own page, so a refresh can bring new results.
     // Don't redraw while the admin is typing a score.
     const typing = slots.results.contains(document.activeElement) && /^(INPUT|SELECT)$/.test(document.activeElement.tagName);

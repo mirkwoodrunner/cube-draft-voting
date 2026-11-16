@@ -79,8 +79,78 @@ function draftNight(draftId, voterToken) {
     return form;
   }
 
-  function photoBlock(pod, me) {
+  // What the player has typed into the deck report and not saved yet, so a redraw keeps it.
+  let deckDraft = null;
+  const gather = (st) => deckDraft || {
+    deckName: st.me.deck.deckName || '',
+    notes: st.me.deck.notes || '',
+    matchNotes: { ...st.me.deck.matchNotes }
+  };
+
+  async function saveDeck() {
+    if (!deckDraft) return;
+    await api(`${base}/decks/mine`, { method: 'PUT', headers, body: deckDraft });
+    deckDraft = null;
+  }
+
+  /** Runs a deck report action: saves what was typed first, then redraws. */
+  const deckAction = (fn) => async (e) => {
+    const btn = e.currentTarget;
+    const which = btn.dataset.act;
+    btn.disabled = true;
+    try {
+      await saveDeck();
+      const label = await fn(btn);
+      await load(true);
+      if (label) { // the button was redrawn, so say it on the new one
+        const fresh = root.querySelector(`button[data-act="${which}"]`);
+        if (fresh) {
+          const old = fresh.textContent;
+          fresh.textContent = label;
+          setTimeout(() => { fresh.textContent = old; }, 2500);
+        }
+      }
+    } catch (err) {
+      alert(err.message);
+      btn.disabled = false;
+    }
+  };
+
+  /** Shares the report through the phone's share menu (with the photo), or copies the text. */
+  async function shareReport() {
+    const { text, photoUrl } = await api(`${base}/decks/mine/report`, { headers });
+    if (navigator.share && matchMedia('(pointer: coarse)').matches) {
+      let files = [];
+      if (photoUrl) {
+        const blob = await fetch(photoUrl).then((r) => r.blob());
+        const file = new File([blob], 'deck.jpg', { type: blob.type || 'image/jpeg' });
+        if (navigator.canShare && navigator.canShare({ files: [file] })) files = [file];
+      }
+      try {
+        await navigator.share(files.length ? { text, files } : { text });
+        return null;
+      } catch (err) {
+        if (err && err.name === 'AbortError') return null;
+      }
+    }
+    await copyText(text);
+    return photoUrl ? 'Copied! Add the photo in Discord' : 'Copied!';
+  }
+
+  function deckBlock(st, pod) {
+    const me = st.me;
     const mine = pod.players.find((p) => p.name === me.name);
+    const draft = gather(st);
+    const keep = () => { busy = true; deckDraft = draft; };
+    const area = (value, label, rows, max, onInput) => {
+      const el = h('textarea', { rows, maxlength: max, 'aria-label': label, placeholder: label, class: 'w-full rounded-lg bg-slate-900 px-3 py-2 text-sm ring-1 ring-slate-600 focus:outline-none focus:ring-emerald-500' });
+      el.value = value;
+      el.addEventListener('input', () => { onInput(el.value); keep(); });
+      return el;
+    };
+    const deckName = h('input', { maxlength: 80, value: draft.deckName, placeholder: 'Deck name, like Bant Broodscale', 'aria-label': 'Deck name', class: 'w-full rounded-lg bg-slate-900 px-3 py-2 ring-1 ring-slate-600 focus:outline-none focus:ring-emerald-500' });
+    deckName.addEventListener('input', () => { draft.deckName = deckName.value; keep(); });
+
     const upload = photoPicker(mine.photoUrl ? 'Replace photo' : 'Add a deck photo', async (file) => {
       await uploadPhoto(`${base}/decks/mine/photo`, file, headers);
       await load(true);
@@ -93,11 +163,38 @@ function draftNight(draftId, voterToken) {
         await load(true);
       } catch (err) { alert(err.message); }
     } }, 'Remove');
-    return h('div', { class: 'flex flex-wrap items-center gap-3 rounded-xl bg-slate-900/50 p-3' },
-      mine.photoUrl ? photoThumb(mine.photoUrl, 'Your deck', 'h-20 w-20') : h('div', { class: 'flex h-20 w-20 items-center justify-center rounded-md border border-dashed border-slate-600 text-xs text-slate-500' }, 'No photo'),
-      h('div', { class: 'space-y-2' },
-        h('div', { class: 'text-sm font-semibold text-slate-200' }, 'Your deck'),
-        h('div', { class: 'flex flex-wrap gap-2' }, upload, remove)));
+
+    const myMatches = pod.matches.filter((m) => played(m) && (m.player1 === me.name || m.player2 === me.name)).sort((a, b) => a.roundNumber - b.roundNumber);
+    const deckOf = new Map(pod.players.map((p) => [p.name, p.deckName]));
+    const matchNotes = myMatches.map((m) => {
+      const first = m.player1 === me.name;
+      const opp = first ? m.player2 : m.player1;
+      const score = first ? `${m.player1Wins}-${m.player2Wins}` : `${m.player2Wins}-${m.player1Wins}`;
+      const label = `${score}${m.draws ? `-${m.draws}` : ''} vs ${opp}${deckOf.get(opp) ? ` on ${deckOf.get(opp)}` : ''}`;
+      return h('div', { class: 'space-y-1' },
+        h('div', { class: 'text-sm font-medium text-slate-200' }, `Round ${m.roundNumber}: ${label}`),
+        area(draft.matchNotes[m.id] || '', 'How did it go? (optional)', 2, 600, (v) => { draft.matchNotes[m.id] = v; }));
+    });
+
+    const save = h('button', { type: 'button', class: `${btnCls} bg-emerald-600 hover:bg-emerald-500`, dataset: { act: 'save' }, onclick: deckAction(async () => 'Saved') }, 'Save');
+    const share = h('button', { type: 'button', class: `${btnCls} bg-indigo-600 hover:bg-indigo-500`, dataset: { act: 'share' }, onclick: deckAction(shareReport) }, 'Share my deck');
+    const post = st.discordPost && h('button', { type: 'button', class: `${btnCls} bg-indigo-600 hover:bg-indigo-500`, dataset: { act: 'post' }, onclick: deckAction(async () => {
+      await api(`${base}/decks/mine/post`, { method: 'POST', headers });
+      return 'Posted!';
+    }) }, me.deck.postedAt ? 'Post to Discord again' : 'Post to Discord');
+
+    return h('div', { class: 'space-y-3 rounded-xl bg-slate-900/50 p-3' },
+      h('h3', { class: 'text-sm font-semibold text-slate-200' }, 'Your deck'),
+      deckName,
+      h('div', { class: 'flex flex-wrap items-center gap-3' },
+        mine.photoUrl ? photoThumb(mine.photoUrl, 'Your deck', 'h-20 w-20') : h('div', { class: 'flex h-20 w-20 items-center justify-center rounded-md border border-dashed border-slate-600 text-xs text-slate-500' }, 'No photo'),
+        h('div', { class: 'flex flex-wrap gap-2' }, upload, remove)),
+      myMatches.length > 0 && h('div', { class: 'space-y-2' }, matchNotes),
+      area(draft.notes, 'Anything else about the draft? (optional)', 3, 1500, (v) => { draft.notes = v; }),
+      h('div', { class: 'flex flex-wrap items-center justify-end gap-2' }, save, share, post),
+      h('p', { class: 'text-xs text-slate-500' }, st.discordPost
+        ? 'Post to Discord puts your record, notes and photo in the group\'s channel. Share my deck opens your phone\'s share menu or copies the text.'
+        : 'Share my deck opens your phone\'s share menu with the text and photo, so you can pick Discord. On a computer it copies the text.'));
   }
 
   function standingsTable(st, pod) {
@@ -109,7 +206,8 @@ function draftNight(draftId, voterToken) {
         h('tbody', { class: 'divide-y divide-slate-700' },
           pod.players.map((p) => h('tr', { class: st.me && st.me.name === p.name ? 'bg-emerald-900/20' : '' },
             td(pod.matchesPlayed ? p.rank : '', 'text-slate-400'),
-            td(h('span', { class: 'flex items-center gap-2' }, p.photoUrl && photoThumb(p.photoUrl, `${p.name}'s deck`, 'h-8 w-8'), h('span', null, p.name), p.trophy && h('span', { title: '3-0' }, '🏆'))),
+            td(h('span', { class: 'flex items-center gap-2' }, p.photoUrl && photoThumb(p.photoUrl, `${p.name}'s deck`, 'h-8 w-8'),
+              h('span', { class: 'min-w-0' }, h('span', null, p.name), p.trophy && h('span', { title: '3-0' }, ' 🏆'), p.deckName && h('span', { class: 'block text-xs text-slate-400' }, p.deckName)))),
             st.draft.teamMode && td(p.team === null ? '' : TEAMS[p.team], 'text-xs text-slate-400'),
             td(`${p.wins}-${p.losses}-${p.draws}`, 'text-right'),
             td(p.matchPoints, 'text-right font-semibold'),
@@ -134,8 +232,8 @@ function draftNight(draftId, voterToken) {
         h('h3', { class: 'text-lg font-semibold' }, pod.cubeName, isMine && h('span', { class: 'ml-2 rounded-full bg-emerald-600/30 px-2 py-0.5 text-xs text-emerald-200' }, 'your pod')),
         pod.teamScore && h('div', { class: 'text-sm font-semibold' },
           h('span', { class: 'text-sky-300' }, `${TEAMS[0]} ${pod.teamScore[0]}`), h('span', { class: 'px-1.5 text-slate-500' }, '-'), h('span', { class: 'text-rose-300' }, `${pod.teamScore[1]} ${TEAMS[1]}`))),
-      isMine && photoBlock(pod, st.me),
       isMine && reportForm(st, pod, st.me),
+      isMine && deckBlock(st, pod),
       standingsTable(st, pod),
       matchList(pod));
   }
@@ -150,7 +248,7 @@ function draftNight(draftId, voterToken) {
         h('h2', { class: 'text-xl font-bold' }, 'Draft night'), share),
       st.trophies.length > 0 && h('div', { class: 'rounded-xl bg-amber-500/10 p-3 text-sm text-amber-200 ring-1 ring-amber-500/30' }, `🏆 3-0: ${st.trophies.map((t) => `${t.name} (${t.cubeName})`).join(', ')}`),
       st.me
-        ? h('p', { class: 'text-sm text-slate-400' }, `You're playing as ${st.me.name}. Report your matches and add a photo of your deck below.`)
+        ? h('p', { class: 'text-sm text-slate-400' }, `You're playing as ${st.me.name}. Report your matches, then name your deck, add a photo and share how it went.`)
         : h('p', { class: 'text-sm text-slate-400' }, 'To report matches and add a deck photo, log in with Discord or open this link in the browser you voted from.'),
       mine && podCard(st, mine),
       ...others.map((p) => podCard(st, p))

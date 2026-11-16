@@ -35,11 +35,25 @@ Once pods are assigned, the player link (`/vote/:id`) turns into the results pag
 A player who logged in with Discord, or who opens the link in the browser they voted from, also gets:
 
 - **Report a match.** Pick the round and opponent, then the games each side won. A pairing the host set up is picked first. Once a result is in, only the host can change it.
-- **Deck photo.** Add, replace or remove a photo of their own deck. The browser shrinks it to 1600 pixels on the long side before sending, so phone photos upload fast.
+- **Your deck.** Name the deck, add a photo, write a note on each match they played and a note on the night overall. The browser shrinks photos to 1600 pixels on the long side before sending, so phone photos upload fast.
+- **Share my deck.** Builds a post like the ones people already write in Discord. For example:
+
+  ```
+  Bant Broodscale went 1-2 in Pauper Cube
+
+  1-2 vs Pat on Boros Energy
+  0-2 vs Nate
+  2-1 vs Will on Izzet
+  ```
+
+  The opponent's deck shows when they named theirs. Match notes go under each match, and the overall note goes at the end. A 3-0 reads "3-0 undefeated with ... 🏆". On a phone it opens the share menu with the text and photo, so the player can pick Discord. On a computer it copies the text.
+- **Post to Discord.** Shown when `DISCORD_WEBHOOK_URL` is set. Posts the same text and photo straight to that channel, under the player's name and Discord avatar. Mentions are turned off, so a post can't ping anyone. A player can post once a minute. Reports over 2000 characters go out as several messages.
 
 Players who joined late have no ballot, so they need Discord login or the host to add their photo and results.
 
-The "Share results" button works the same as on the dashboard. The dashboard refreshes every 15 seconds on draft night so reported matches and photos show up, except while you're typing a score.
+Unsaved notes survive reporting a match or adding a photo. Share and Post save first.
+
+The "Share results" button works the same as on the dashboard. Its text includes each player's deck name. The dashboard refreshes every 15 seconds on draft night so reported matches and photos show up, except while you're typing a score.
 
 ### Team draft
 
@@ -103,9 +117,15 @@ Setup in the [Discord developer portal](https://discord.com/developers/applicati
 
 Discord sometimes blocks Render's shared IP addresses. The fix is to send the two login calls through a free Cloudflare Worker.
 
-1. In Cloudflare, go to Workers & Pages, create a Worker, and replace its code with `discord-proxy/worker.js`. Deploy it.
+1. In Cloudflare, go to Workers & Pages, create a Worker, and replace its code with `discord-proxy/worker.js`. Deploy it. If you set it up before deck reports existed, paste in the new code again. The old version only allows the login calls, so webhook posts get "Not found".
 2. In the Worker's Settings, under Variables and Secrets, add a secret named `PROXY_KEY` set to a long random string.
 3. In Render, set `DISCORD_API_BASE` to the Worker's URL (like `https://discord-proxy.yourname.workers.dev`) and `DISCORD_PROXY_KEY` to the same random string.
+
+Deck report posts use the same Worker when these are set.
+
+#### Posting deck reports to a channel
+
+In Discord, open the channel's settings, then Integrations, then Webhooks, and create a webhook. Copy its URL into `DISCORD_WEBHOOK_URL`. Anyone who can see the webhook URL can post to that channel, so keep it secret like a password. Without it, players can still use Share my deck.
 
 ### Draft night API
 
@@ -116,8 +136,11 @@ A player is found by their Discord login, or else by their ballot's edit token i
 - `POST /api/drafts/:id/matches` logs a match from the reporter's side. Body: `{ round, opponent, wins, losses, draws }`. A pairing the host already set up is filled in. A match that already has a result returns 409.
 - `PATCH /api/drafts/:id/matches/:matchId` corrects a score. Body: any of `{ player1Wins, player2Wins, draws }`. Sets `editedByOwner`.
 - `DELETE /api/drafts/:id/matches/:matchId` removes a match.
-- `GET /api/drafts/:id/standings` ranks each pod by match points (3 for a win, 1 for a draw), then game win percentage. Players level on both share a rank. `trophies` lists every 3-0 record with no draws. Each pod also lists its `matches`, and each player has a `photoUrl` or null. `me` is the caller's seat, `{ name, cubeId }`, or null.
+- `GET /api/drafts/:id/standings` ranks each pod by match points (3 for a win, 1 for a draw), then game win percentage. Players level on both share a rank. `trophies` lists every 3-0 record with no draws. Each pod also lists its `matches`, and each player has a `deckName` and a `photoUrl`, or null. `me` is the caller's seat, `{ name, cubeId, deck }`, or null. `discordPost` says whether Post to Discord is turned on.
 - `PUT /api/drafts/:id/decks/mine/photo` sets the caller's deck photo. The body is the image itself (JPEG, PNG or WebP, up to 8 MB). The type is checked from the file's bytes. `DELETE` on the same path removes it.
+- `PUT /api/drafts/:id/decks/mine` saves the caller's deck. Body: `{ deckName, notes, matchNotes: { matchId: text } }`. Up to 80, 1500 and 600 characters. Notes on matches that aren't the caller's are dropped.
+- `GET /api/drafts/:id/decks/mine/report` returns `{ text, photoUrl }`, the deck report as it would be posted.
+- `POST /api/drafts/:id/decks/mine/post` posts the report to `DISCORD_WEBHOOK_URL`. 403 when that isn't set, 429 within a minute of the last post.
 - `GET /api/drafts/:id/decks/:deckId/photo` serves a photo. Its URL changes when the photo does, so it is cached.
 - `PUT /api/admin/:adminToken/decks/photo?name=...` and `DELETE` on the same path let the host set or remove anyone's photo.
 
@@ -157,6 +180,7 @@ Tables are created or upgraded automatically on startup. Existing sessions from 
 | `DISCORD_CLIENT_SECRET` | From the Discord developer portal |
 | `DISCORD_API_BASE` | Optional. URL of the Discord proxy Worker. Defaults to `https://discord.com` |
 | `DISCORD_PROXY_KEY` | Optional. Shared key sent to the proxy Worker |
+| `DISCORD_WEBHOOK_URL` | Optional. Channel webhook that deck reports are posted to. Doesn't need Discord login on |
 | `DISCORD_REDIRECT_URI` | Optional. Defaults to `/auth/discord/callback` on the host the request came in on |
 | `CUBECOBRA_BASE_URL` | Override for tests. Defaults to `https://cubecobra.com` |
 
@@ -172,6 +196,7 @@ Tables are created or upgraded automatically on startup. Existing sessions from 
 - `src/records.js` player records across drafts, and unclaimed names
 - `src/pods.js` pod edits, teams, matches and standings
 - `src/matches.js` reads and writes the `draft_matches` table
-- `src/decks.js` deck photos in the `draft_decks` table
+- `src/decks.js` decks in the `draft_decks` table, and the deck report text
+- `src/webhook.js` posts deck reports to Discord
 - `src/owner.js` owner login
 - `public/` Tailwind pages and scripts

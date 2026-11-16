@@ -158,6 +158,12 @@ async function migrate() {
     );
     CREATE UNIQUE INDEX IF NOT EXISTS draft_decks_draft_name_idx ON draft_decks(draft_id, lower(player_name));
     CREATE INDEX IF NOT EXISTS draft_decks_player_idx ON draft_decks(player_id) WHERE player_id IS NOT NULL;
+
+    -- deck report: the player's write-up of their deck, shared to Discord.
+    -- match_notes is { matchId: text }, a note on each match they played.
+    ALTER TABLE draft_decks ADD COLUMN IF NOT EXISTS notes TEXT;
+    ALTER TABLE draft_decks ADD COLUMN IF NOT EXISTS match_notes JSONB NOT NULL DEFAULT '{}';
+    ALTER TABLE draft_decks ADD COLUMN IF NOT EXISTS posted_at TIMESTAMPTZ;
   `);
 }
 

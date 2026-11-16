@@ -82,7 +82,7 @@ function playerRow(d, pod, p, act) {
   return h('li', { class: 'flex flex-wrap items-center justify-between gap-2 py-1.5 text-sm' },
     h('span', { class: 'flex items-center gap-2' },
       linkedBadge(d, p.name),
-      h('span', null, p.name),
+      h('span', null, p.name, d.deckNames && d.deckNames[p.name] && h('span', { class: 'ml-1 text-xs text-slate-400' }, `on ${d.deckNames[p.name]}`)),
       p.late
         ? h('span', { class: 'rounded-full bg-violet-600/30 px-2 py-0.5 text-xs text-violet-200' }, 'joined late')
         : h('span', { class: `rounded-full px-2 py-0.5 text-xs ${p.rank === 1 ? 'bg-emerald-600/30 text-emerald-300' : 'bg-slate-700 text-slate-300'}` }, `${ordinal(p.rank)} choice`)),

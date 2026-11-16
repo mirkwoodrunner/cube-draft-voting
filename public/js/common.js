@@ -298,7 +298,7 @@ function resultsText(st, link) {
     }
     for (const p of pod.players) {
       const gwp = p.gwp === null ? '' : `, ${Math.round(p.gwp * 100)}% games`;
-      lines.push(`${p.rank}. ${p.name} ${p.wins}-${p.losses}-${p.draws} (${p.matchPoints} pts${gwp})${p.trophy ? ' 🏆' : ''}`);
+      lines.push(`${p.rank}. ${p.name}${p.deckName ? ` (${p.deckName})` : ''} ${p.wins}-${p.losses}-${p.draws} (${p.matchPoints} pts${gwp})${p.trophy ? ' 🏆' : ''}`);
     }
   }
   if (st.trophies.length) lines.push('', `3-0: ${st.trophies.map((t) => t.name).join(', ')}`);

@@ -11,6 +11,7 @@ const discord = require('./discord');
 const records = require('./records');
 const matches = require('./matches');
 const decks = require('./decks');
+const webhook = require('./webhook');
 
 const router = express.Router();
 
@@ -351,6 +352,7 @@ async function adminView(s, req) {
     standings: s.results ? pods.standings(s.results, s.team_mode) : null,
     linked,
     photos: await decks.photosByName(pool, s.id, s.public_id),
+    deckNames: Object.fromEntries(Object.entries(await decks.byName(pool, s.id, s.public_id)).filter(([, x]) => x.deckName).map(([n, x]) => [n, x.deckName])),
     isOwner: await owner.isOwner(req)
   };
 }
@@ -788,7 +790,7 @@ async function standingsView(s, db = pool) {
   const { rows: votes } = await db.query('SELECT player_name, player_id FROM votes WHERE session_id = $1 AND player_id IS NOT NULL', [s.id]);
   const linked = records.linkedNames(s.results, votes);
   const all = pods.standings(s.results, s.team_mode);
-  const photos = await decks.photosByName(db, s.id, s.public_id);
+  const deckRows = await decks.byName(db, s.id, s.public_id);
   const out = s.results.pods.map((pod) => {
     const st = all[pod.cubeId];
     return {
@@ -810,7 +812,8 @@ async function standingsView(s, db = pool) {
         gamesDrawn: r.gd,
         gwp: r.gwp,
         trophy: r.trophy,
-        photoUrl: photos[r.name] ? photos[r.name].photoUrl : null
+        deckName: deckRows[r.name] ? deckRows[r.name].deckName : null,
+        photoUrl: deckRows[r.name] ? deckRows[r.name].photoUrl : null
       })),
       matches: (s.results.matches || []).filter((m) => m.cubeId === pod.cubeId).map(matches.dto)
     };
@@ -927,7 +930,12 @@ router.get('/drafts/:id/standings', wrap(async (req, res) => {
   await matches.hydrate(pool, [s]);
   res.set('Cache-Control', 'no-store');
   const seat = s.status === 'assigned' ? await mySeat(req, s, s.results) : null;
-  res.json({ ...(await standingsView(s)), me: seat && { name: seat.name, cubeId: seat.cubeId } });
+  let me = null;
+  if (seat) {
+    const d = (await decks.byName(pool, s.id, s.public_id))[seat.name] || {};
+    me = { name: seat.name, cubeId: seat.cubeId, deck: { deckName: d.deckName || null, notes: d.notes || null, matchNotes: d.matchNotes || {}, postedAt: d.postedAt || null } };
+  }
+  res.json({ ...(await standingsView(s)), me, discordPost: webhook.enabled() });
 }));
 
 // ---------- draft night: deck photos ----------
@@ -974,6 +982,87 @@ router.delete('/drafts/:id/decks/mine/photo', wrap(async (req, res) => {
   const seat = await mySeat(req, s, s.results);
   if (!seat) throw new HttpError(403, NOT_SEATED);
   await decks.removePhoto(pool, s.id, seat.name);
+  res.json({ success: true });
+}));
+
+// ---------- draft night: deck reports ----------
+
+/** The caller's seat in an assigned draft, or a 403. */
+async function requireSeat(req, s) {
+  await assignedDraft(s);
+  await matches.hydrate(pool, [s]);
+  const seat = await mySeat(req, s, s.results);
+  if (!seat) throw new HttpError(403, NOT_SEATED);
+  return seat;
+}
+
+// A player saves their deck's name and notes. Body: { deckName, notes, matchNotes: { matchId: text } }.
+router.put('/drafts/:id/decks/mine', wrap(async (req, res) => {
+  const s = await sessionByPublicId(req.params.id);
+  const seat = await requireSeat(req, s);
+  const deckName = cleanText(req.body.deckName, decks.LIMITS.deckName, 'Deck name');
+  const note = (v, label, max) => {
+    try { return decks.cleanNote(v, max); } catch (err) { throw new HttpError(400, `${label} ${err.message}`); }
+  };
+  const notes = note(req.body.notes, 'Notes', decks.LIMITS.notes);
+  const mine = new Map(s.results.matches.filter((m) => m.p1 === seat.name || m.p2 === seat.name).map((m) => [m.id, m]));
+  const matchNotes = {};
+  const input = req.body.matchNotes && typeof req.body.matchNotes === 'object' ? req.body.matchNotes : {};
+  for (const [id, text] of Object.entries(input)) {
+    const m = mine.get(id);
+    if (!m) continue; // a match that was deleted, or someone else's
+    const v = note(text, `The note on round ${m.round}`, decks.LIMITS.matchNote);
+    if (v) matchNotes[id] = v;
+  }
+  await decks.saveDetails(pool, s.id, seat.name, seat.playerId, { deckName, notes, matchNotes });
+  res.json({ success: true });
+}));
+
+/** The deck report text for the caller's seat. */
+async function myReport(s, seat) {
+  const all = await decks.byName(pool, s.id, s.public_id);
+  const pod = s.results.pods.find((p) => p.cubeId === seat.cubeId);
+  const deckNames = Object.fromEntries(Object.entries(all).filter(([, d]) => d.deckName).map(([n, d]) => [n, d.deckName]));
+  const deck = all[seat.name] || {};
+  return { deck, text: decks.reportText({ name: seat.name, cubeName: pod && pod.name, deck, matches: s.results.matches, deckNames }) };
+}
+
+router.get('/drafts/:id/decks/mine/report', wrap(async (req, res) => {
+  const s = await sessionByPublicId(req.params.id);
+  const { deck, text } = await myReport(s, await requireSeat(req, s));
+  res.set('Cache-Control', 'no-store');
+  res.json({ text, photoUrl: deck.photoUrl || null });
+}));
+
+// Posts the caller's deck report to the Discord channel set in DISCORD_WEBHOOK_URL.
+router.post('/drafts/:id/decks/mine/post', wrap(async (req, res) => {
+  if (!webhook.enabled()) throw new HttpError(403, 'Posting to Discord is not set up on this server');
+  const s = await sessionByPublicId(req.params.id);
+  const seat = await requireSeat(req, s);
+  const { deck, text } = await myReport(s, seat);
+  // One post a minute per player, so a double tap doesn't post twice.
+  const { rows: [claim] } = await pool.query(
+    `INSERT INTO draft_decks (draft_id, player_name, player_id, posted_at) VALUES ($1, $2, $3, now())
+     ON CONFLICT (draft_id, lower(player_name)) DO UPDATE SET posted_at = now()
+       WHERE draft_decks.posted_at IS NULL OR draft_decks.posted_at < now() - interval '1 minute'
+     RETURNING id`,
+    [s.id, seat.name, seat.playerId]
+  );
+  if (!claim) throw new HttpError(429, 'You just posted. Wait a minute before posting again.');
+
+  const { rows: [photo] } = await pool.query('SELECT photo_data AS data, photo_mime_type AS mime FROM draft_decks WHERE id = $1 AND photo_data IS NOT NULL', [claim.id]);
+  let avatarUrl = null;
+  if (seat.playerId) {
+    const { rows: [p] } = await pool.query('SELECT * FROM players WHERE id = $1', [seat.playerId]);
+    if (p) avatarUrl = discord.playerDto(p).avatarUrl;
+  }
+  try {
+    await webhook.post({ username: seat.name, avatarUrl, messages: decks.splitMessage(text), photo: photo || null });
+  } catch (err) {
+    await pool.query('UPDATE draft_decks SET posted_at = $2 WHERE id = $1', [claim.id, deck.postedAt || null]);
+    console.error(err.message);
+    throw new HttpError(502, err.userMsg || 'Posting to Discord failed');
+  }
   res.json({ success: true });
 }));
 
