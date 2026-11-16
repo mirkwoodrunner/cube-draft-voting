@@ -94,6 +94,70 @@ async function migrate() {
     );
     ALTER TABLE votes ADD COLUMN IF NOT EXISTS player_id INT REFERENCES players(id) ON DELETE SET NULL;
     CREATE UNIQUE INDEX IF NOT EXISTS votes_session_player_idx ON votes(session_id, player_id) WHERE player_id IS NOT NULL;
+
+    -- draft night: match results. A draft is a row in sessions. Seats are names, so
+    -- player1_name / player2_name identify the players. player1_id / player2_id are
+    -- the Discord players linked to those names, or null.
+    -- player1_wins / player2_wins / draws are all null for a pairing not played yet.
+    CREATE TABLE IF NOT EXISTS draft_matches (
+      draft_id INT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+      id TEXT NOT NULL,
+      seq BIGSERIAL,
+      cube_id TEXT NOT NULL,
+      round_number INT NOT NULL CHECK (round_number BETWEEN 1 AND 20),
+      player1_name TEXT NOT NULL,
+      player2_name TEXT NOT NULL,
+      player1_id INT REFERENCES players(id) ON DELETE SET NULL,
+      player2_id INT REFERENCES players(id) ON DELETE SET NULL,
+      player1_wins INT CHECK (player1_wins BETWEEN 0 AND 9),
+      player2_wins INT CHECK (player2_wins BETWEEN 0 AND 9),
+      draws INT CHECK (draws BETWEEN 0 AND 9),
+      reported_by INT REFERENCES players(id) ON DELETE SET NULL,
+      edited_by_owner BOOLEAN NOT NULL DEFAULT false,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      PRIMARY KEY (draft_id, id),
+      CHECK ((player1_wins IS NULL) = (player2_wins IS NULL) AND (player1_wins IS NULL) = (draws IS NULL))
+    );
+    CREATE INDEX IF NOT EXISTS draft_matches_player1_idx ON draft_matches(player1_id) WHERE player1_id IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS draft_matches_player2_idx ON draft_matches(player2_id) WHERE player2_id IS NOT NULL;
+
+    -- Moves matches from the first version (inside sessions.results) into the table, then
+    -- removes them from the JSON, so a match deleted later can't come back on a restart.
+    INSERT INTO draft_matches (draft_id, id, cube_id, round_number, player1_name, player2_name, player1_id, player2_id,
+      player1_wins, player2_wins, draws)
+    SELECT s.id, COALESCE(m.v->>'id', md5(s.id || ':' || m.n)), m.v->>'cubeId', (m.v->>'round')::int, m.v->>'p1', m.v->>'p2',
+      (SELECT p.id FROM players p WHERE p.id = COALESCE((s.results->'playerIds'->>(m.v->>'p1'))::int,
+        (SELECT v.player_id FROM votes v WHERE v.session_id = s.id AND v.player_name = m.v->>'p1'))),
+      (SELECT p.id FROM players p WHERE p.id = COALESCE((s.results->'playerIds'->>(m.v->>'p2'))::int,
+        (SELECT v.player_id FROM votes v WHERE v.session_id = s.id AND v.player_name = m.v->>'p2'))),
+      (m.v->>'w1')::int, (m.v->>'w2')::int,
+      CASE WHEN m.v->>'w1' IS NOT NULL THEN COALESCE((m.v->>'d')::int, 0) END
+    FROM sessions s, jsonb_array_elements(s.results->'matches') WITH ORDINALITY AS m(v, n)
+    WHERE jsonb_typeof(s.results->'matches') = 'array'
+    ORDER BY s.id, m.n
+    ON CONFLICT (draft_id, id) DO NOTHING;
+    UPDATE sessions SET results = results - 'matches' WHERE results ? 'matches';
+
+    -- draft night: each player's deck. archetype_tags is a JSON array of strings.
+    -- The photo is stored in the row (photo_data), with its type in photo_mime_type.
+    CREATE TABLE IF NOT EXISTS draft_decks (
+      id SERIAL PRIMARY KEY,
+      draft_id INT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+      player_name TEXT NOT NULL,
+      player_id INT REFERENCES players(id) ON DELETE SET NULL,
+      deck_name TEXT,
+      archetype_tags JSONB NOT NULL DEFAULT '[]',
+      decklist_url TEXT,
+      photo_data BYTEA,
+      photo_mime_type TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      CHECK ((photo_data IS NULL) = (photo_mime_type IS NULL)),
+      CHECK (photo_mime_type IS NULL OR photo_mime_type IN ('image/jpeg', 'image/png', 'image/webp'))
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS draft_decks_draft_name_idx ON draft_decks(draft_id, lower(player_name));
+    CREATE INDEX IF NOT EXISTS draft_decks_player_idx ON draft_decks(player_id) WHERE player_id IS NOT NULL;
   `);
 }
 
