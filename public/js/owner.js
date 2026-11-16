@@ -4,19 +4,32 @@
   const STATUS = { open: ['Voting open', 'bg-emerald-600'], closed: ['Voting closed', 'bg-amber-600'], assigned: ['Pods assigned', 'bg-sky-600'] };
   const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
-  function loginView(enabled) {
-    if (!enabled) {
-      return card(
-        h('h1', { class: 'text-2xl font-bold text-emerald-400' }, 'Owner login'),
-        h('p', { class: 'text-sm text-slate-300' }, 'Owner login is turned off. Set the ADMIN_PASSWORD environment variable on the server and restart it.'));
+  function loginView(me) {
+    const title = h('h1', { class: 'text-2xl font-bold text-emerald-400' }, 'Owner login');
+    if (!me.enabled) {
+      return card(title,
+        h('p', { class: 'text-sm text-slate-300' }, 'Owner login is turned off. Set OWNER_DISCORD_IDS (with Discord login turned on) or ADMIN_PASSWORD on the server and restart it.'));
     }
-    const pw = h('input', { type: 'password', required: true, autocomplete: 'current-password', class: 'mt-1 w-full rounded-lg bg-slate-900 px-3 py-2 ring-1 ring-slate-600 focus:outline-none focus:ring-emerald-500' });
-    const err = h('p', { class: 'hidden text-sm text-red-300', role: 'alert' });
-    const go = h('button', { class: 'w-full rounded-xl bg-emerald-600 px-4 py-3 font-semibold text-white hover:bg-emerald-500 disabled:opacity-50' }, 'Log in');
-    return card(
-      h('h1', { class: 'text-2xl font-bold text-emerald-400' }, 'Owner login'),
-      h('p', { class: 'text-sm text-slate-400' }, 'See every draft and its votes, open any admin dashboard, and manage the cube library.'),
-      h('form', { class: 'space-y-3', onsubmit: async (e) => {
+    const parts = [title, h('p', { class: 'text-sm text-slate-400' }, 'See every draft and its votes, open any admin dashboard, and manage the cube library.')];
+
+    if (me.discordLogin) {
+      if (me.player) {
+        parts.push(h('p', { class: 'text-sm text-amber-300' }, `You are logged in with Discord as ${me.player.name}, which is not the owner account.`),
+          h('button', { type: 'button', class: 'rounded-xl bg-slate-700 px-4 py-3 font-semibold hover:bg-slate-600', onclick: async () => {
+            await api('/auth/logout', { method: 'POST' });
+            load();
+          } }, 'Log out of Discord'));
+      } else {
+        parts.push(h('a', { href: '/auth/discord?next=%2Fowner', class: 'block w-full rounded-xl bg-indigo-600 px-4 py-3 text-center font-semibold text-white hover:bg-indigo-500' }, 'Log in with Discord'));
+      }
+    }
+
+    if (me.passwordLogin) {
+      const pw = h('input', { type: 'password', required: true, autocomplete: 'current-password', class: 'mt-1 w-full rounded-lg bg-slate-900 px-3 py-2 ring-1 ring-slate-600 focus:outline-none focus:ring-emerald-500' });
+      const err = h('p', { class: 'hidden text-sm text-red-300', role: 'alert' });
+      const go = h('button', { class: 'w-full rounded-xl bg-emerald-600 px-4 py-3 font-semibold text-white hover:bg-emerald-500 disabled:opacity-50' }, 'Log in with password');
+      if (me.discordLogin) parts.push(h('p', { class: 'pt-2 text-xs text-slate-500' }, 'Or use the owner password'));
+      parts.push(h('form', { class: 'space-y-3', onsubmit: async (e) => {
         e.preventDefault();
         go.disabled = true;
         try {
@@ -29,6 +42,8 @@
         }
       } },
         h('label', { class: 'block text-sm font-medium text-slate-200' }, 'Password', pw), err, go));
+    }
+    return card(...parts);
   }
 
   function sessionRow(s, refresh) {
@@ -188,7 +203,7 @@
   async function load() {
     let me;
     try { me = await api('/owner/me'); } catch (ex) { return showError(app, ex.message); }
-    if (!me.loggedIn) return app.replaceChildren(loginView(me.enabled));
+    if (!me.loggedIn) return app.replaceChildren(loginView(me));
 
     const [{ sessions }, { cubes }] = await Promise.all([api('/owner/sessions'), api('/library')]);
     app.replaceChildren(

@@ -50,7 +50,14 @@ Every page has a menu button at the top right. It links to New draft, Cube libra
 
 ### Owner page
 
-Set `ADMIN_PASSWORD` and log in at `/owner`. It lists every draft ever made, newest first, with votes, pods and match result counts, and opens any draft's admin dashboard even if its admin link was lost. It also manages the cube library. The login lasts 30 days in that browser. Changing the password logs everyone out.
+Log in at `/owner`. It lists every draft ever made, newest first, with votes, pods and match result counts, and opens any draft's admin dashboard even if its admin link was lost. It also manages the cube library.
+
+There are two ways to log in. Turn on either or both.
+
+- **Discord.** Set `OWNER_DISCORD_IDS` to your Discord user ID (several can be comma separated). Discord login must be on too. Anyone logged in with Discord under that ID is the owner everywhere on the site. To find your ID, turn on Developer Mode in Discord (Settings, Advanced), then right-click your name and pick Copy User ID. It's a long number, not your username.
+- **Password.** Set `ADMIN_PASSWORD`. The login lasts 30 days in that browser. Changing the password logs everyone out. Worth keeping as a backup in case Discord login breaks. Unset it to turn password login off.
+
+Log out on the owner page ends both kinds of login in that browser.
 
 ### Discord login and player records
 
@@ -109,7 +116,8 @@ Tables are created or upgraded automatically on startup. Existing sessions from 
 | --- | --- |
 | `DATABASE_URL` | Postgres connection string (required) |
 | `PORT` | Defaults to 3000 |
-| `ADMIN_PASSWORD` | Turns on the owner page at `/owner`. Off when unset |
+| `OWNER_DISCORD_IDS` | Discord user IDs that are the owner, comma separated. Needs Discord login on |
+| `ADMIN_PASSWORD` | Optional owner password login at `/owner`. Off when unset |
 | `DISCORD_CLIENT_ID` | Turns on Discord login, with the secret. Off when unset |
 | `DISCORD_CLIENT_SECRET` | From the Discord developer portal |
 | `DISCORD_API_BASE` | Optional. URL of the Discord proxy Worker. Defaults to `https://discord.com` |
