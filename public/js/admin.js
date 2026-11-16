@@ -29,12 +29,12 @@
   const smallBtn = (cls, label, onclick) => h('button', { type: 'button', class: `rounded-lg px-3 py-2 text-sm font-semibold text-white disabled:opacity-50 ${cls}`, onclick }, label);
 
   /** Runs an admin action and redraws from the dashboard the server sends back. */
-  async function act(path, button, { method = 'POST', body } = {}) {
+  async function act(path, button, { method = 'POST', body, file } = {}) {
     if (busy) return;
     busy = true;
     if (button) button.disabled = true;
     try {
-      render(await api(`${base}${path}`, { method, body }));
+      render(file ? await uploadPhoto(`${base}${path}`, file) : await api(`${base}${path}`, { method, body }));
     } catch (err) {
       alert(err.message);
     } finally {
@@ -300,8 +300,11 @@
 
     if (!editing && (cubeKey !== keys.cubes || !slots.cubes.firstChild)) { keys.cubes = cubeKey; drawCubes(); }
 
-    const resKey = JSON.stringify([results, cubeKey, session.teamMode]);
-    if (resKey !== keys.results) {
+    const resKey = JSON.stringify([results, cubeKey, session.teamMode, d.photos, d.deckNames, d.linked]);
+    // Players report matches from their own page, so a refresh can bring new results.
+    // Don't redraw while the admin is typing a score.
+    const typing = slots.results.contains(document.activeElement) && /^(INPUT|SELECT)$/.test(document.activeElement.tagName);
+    if (resKey !== keys.results && !typing) {
       keys.results = resKey;
       slots.results.replaceChildren(...(results ? [h('h2', { class: 'pt-2 text-xl font-bold' }, 'Results'), ...resultsView(d, duplicateNames(cubes), act).flat(Infinity).filter(Boolean)] : []));
     }
@@ -315,9 +318,10 @@
       slots.ballots.replaceChildren(...[ballotsView(d)].filter(Boolean));
     }
 
-    // Poll only while votes can still change.
+    // Poll while votes can still change, and more slowly on draft night for reported matches and photos.
     clearInterval(timer);
     if (session.status === 'open') timer = setInterval(refresh, 5000);
+    else if (session.status === 'assigned') timer = setInterval(refresh, 15000);
   }
 
   async function refresh() {

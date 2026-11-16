@@ -219,3 +219,105 @@ function siteNav() {
 }
 
 document.body.prepend(siteNav());
+
+/**
+ * Shrinks a photo to at most `max` pixels on its long side and returns it as a JPEG
+ * blob. Phone photos are several MB, this brings them down to a few hundred KB.
+ */
+async function shrinkPhoto(file, max = 1600) {
+  if (!file || !/^image\//.test(file.type || 'image/')) throw new Error('Pick an image file');
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await new Promise((ok, bad) => {
+      const i = new Image();
+      i.onload = () => ok(i);
+      i.onerror = () => bad(new Error("This photo can't be opened in this browser. Try a JPEG or PNG."));
+      i.src = url;
+    });
+    const scale = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(img.naturalWidth * scale));
+    canvas.height = Math.max(1, Math.round(img.naturalHeight * scale));
+    canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+    const blob = await new Promise((ok) => canvas.toBlob(ok, 'image/jpeg', 0.85));
+    if (!blob) throw new Error("This photo can't be opened in this browser. Try a JPEG or PNG.");
+    return blob;
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+/** Sends a photo picked by the user to `path` (an /api path) as the request body. */
+async function uploadPhoto(path, file, headers = {}) {
+  const blob = await shrinkPhoto(file);
+  const res = await fetch(`/api${path}`, { method: 'PUT', headers: { 'Content-Type': 'image/jpeg', ...headers }, body: blob });
+  let data = {};
+  try { data = await res.json(); } catch { /* non-JSON error */ }
+  if (!res.ok) throw new Error(data.error || `Upload failed (${res.status})`);
+  return data;
+}
+
+/** A button that opens the photo picker and calls `onFile(file, button)`. */
+function photoPicker(label, onFile, cls) {
+  const input = h('input', { type: 'file', accept: 'image/*', hidden: true });
+  const btn = h('button', { type: 'button', class: cls, onclick: () => input.click() }, label);
+  input.addEventListener('change', async () => {
+    const file = input.files[0];
+    input.value = '';
+    if (!file) return;
+    const old = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = 'Uploading...';
+    try {
+      await onFile(file, btn);
+    } catch (err) {
+      alert(err.message);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = old;
+    }
+  });
+  return h('span', null, btn, input);
+}
+
+/** A small deck photo that opens full size in a new tab. */
+function photoThumb(url, alt, size = 'h-10 w-10') {
+  return h('a', { href: url, target: '_blank', rel: 'noopener', title: alt, class: 'inline-flex shrink-0' },
+    h('img', { src: url, alt, loading: 'lazy', class: `${size} rounded-md object-cover ring-1 ring-slate-600` }));
+}
+
+/** Plain-text standings for pasting into Discord or a group chat. `st` is /drafts/:id/standings. */
+function resultsText(st, link) {
+  const lines = [`${st.draft.title}: results`];
+  for (const pod of st.pods) {
+    lines.push('', pod.cubeName);
+    if (pod.teamScore) lines.push(`Team A ${pod.teamScore[0]} - ${pod.teamScore[1]} Team B`);
+    if (!pod.matchesPlayed) {
+      lines.push('No matches reported yet');
+      continue;
+    }
+    for (const p of pod.players) {
+      const gwp = p.gwp === null ? '' : `, ${Math.round(p.gwp * 100)}% games`;
+      lines.push(`${p.rank}. ${p.name}${p.deckName ? ` (${p.deckName})` : ''} ${p.wins}-${p.losses}-${p.draws} (${p.matchPoints} pts${gwp})${p.trophy ? ' 🏆' : ''}`);
+    }
+  }
+  if (st.trophies.length) lines.push('', `3-0: ${st.trophies.map((t) => t.name).join(', ')}`);
+  lines.push('', `Full results and deck photos: ${link}`);
+  return lines.join('\n');
+}
+
+/** Opens the phone's share sheet with the results, or copies them where there is none. */
+async function shareResults(draftId, button) {
+  const link = `${location.origin}/vote/${draftId}`;
+  const st = await api(`/drafts/${encodeURIComponent(draftId)}/standings`);
+  const text = resultsText(st, link);
+  if (navigator.share && matchMedia('(pointer: coarse)').matches) {
+    try {
+      await navigator.share({ title: `${st.draft.title} results`, text });
+      return;
+    } catch (err) {
+      if (err && err.name === 'AbortError') return;
+    }
+  }
+  await copyText(text, button);
+}
