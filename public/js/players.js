@@ -7,7 +7,6 @@
   } catch (err) {
     return showError(app, err.message);
   }
-  const bar = await accountBar();
   const th = (t, cls = '') => h('th', { class: `px-2 py-2 font-medium ${cls}` }, t);
   const td = (t, cls = '') => h('td', { class: `px-2 py-2 ${cls}` }, t);
   const table = (rows, link) => h('div', { class: 'overflow-x-auto rounded-2xl bg-slate-800 ring-1 ring-slate-700' },
@@ -22,7 +21,6 @@
           td(`${p.gw}-${p.gl}`, 'text-right'))))));
   const unclaimed = data.unclaimed || [];
   app.replaceChildren(
-    bar,
     h('h1', { class: 'text-2xl font-bold text-emerald-400' }, 'Players'),
     h('p', { class: 'mb-5 mt-1 text-sm text-slate-400' }, 'Players who logged in with Discord. Records count drafts where they voted or were added while logged in, and drafts they claimed.'),
     data.players.length

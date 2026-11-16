@@ -132,22 +132,6 @@ function avatar(p, size = 'h-6 w-6') {
     : h('span', { class: `${size} inline-flex shrink-0 items-center justify-center rounded-full bg-indigo-600 text-[10px] font-bold text-white` }, p.name.slice(0, 1).toUpperCase());
 }
 
-/** Login status line with Discord login or logout. */
-async function accountBar() {
-  const { enabled, player } = await getMe();
-  if (!enabled) return '';
-  const next = encodeURIComponent(location.pathname);
-  const right = player
-    ? h('span', { class: 'flex items-center gap-2' },
-      h('a', { href: `/players/${player.id}`, class: 'flex items-center gap-2 text-slate-200 hover:underline' }, avatar(player), player.name),
-      h('button', { type: 'button', class: 'text-slate-400 hover:text-slate-200 hover:underline', onclick: async () => {
-        await api('/auth/logout', { method: 'POST' });
-        location.reload();
-      } }, 'Log out'))
-    : h('a', { href: `/auth/discord?next=${next}`, class: 'rounded-lg bg-indigo-600 px-3 py-1.5 font-semibold text-white hover:bg-indigo-500' }, 'Log in with Discord');
-  return h('div', { class: 'mb-4 flex items-center justify-end gap-3 text-sm' }, right);
-}
-
 /**
  * An in-page confirmation window. Resolves true when confirmed, false on Cancel,
  * Escape or a click outside. Used instead of the browser's confirm(), which some
@@ -186,7 +170,7 @@ function confirmDialog(message, { title = 'Are you sure?', confirmLabel = 'Confi
   });
 }
 
-/** The hamburger menu at the top of every page. "My player page" shows once Discord says who is logged in. */
+/** The header on every page: Discord login status and the hamburger menu. */
 function siteNav() {
   const item = (href, label, cls = 'px-4 py-2.5 text-sm text-slate-100') => {
     const here = location.pathname === href;
@@ -202,24 +186,36 @@ function siteNav() {
     item('/owner', 'Owner page', 'px-4 py-1.5 text-xs text-slate-400'));
   const button = h('button', { type: 'button', 'aria-label': 'Menu', 'aria-expanded': 'false', 'aria-controls': 'site-menu', class: 'rounded-lg p-2 text-slate-300 hover:bg-slate-800 hover:text-white' },
     h('span', { class: 'block h-0.5 w-5 bg-current' }), h('span', { class: 'mt-1 block h-0.5 w-5 bg-current' }), h('span', { class: 'mt-1 block h-0.5 w-5 bg-current' }));
-  let loaded = false;
   const setOpen = (open) => {
     panel.classList.toggle('hidden', !open);
     button.setAttribute('aria-expanded', String(open));
-    if (open && !loaded) {
-      loaded = true;
-      getMe().then(({ player }) => { if (player) mine.replaceChildren(item(`/players/${player.id}`, 'My player page')); });
-    }
   };
+  // Login status sits in the header on every page. Log out lives in the menu.
+  const account = h('div', { class: 'flex min-w-0 items-center' });
+  getMe().then(({ enabled, player }) => {
+    if (!enabled) return;
+    if (player) {
+      account.replaceChildren(h('a', { href: `/players/${player.id}`, class: 'flex min-w-0 items-center gap-2 rounded-lg px-2 py-1 text-sm text-slate-200 hover:bg-slate-800', title: 'My player page' },
+        avatar(player), h('span', { class: 'max-w-[10rem] truncate' }, player.name)));
+      mine.replaceChildren(item(`/players/${player.id}`, 'My player page'),
+        h('button', { type: 'button', class: 'block w-full px-4 py-2.5 text-left text-sm text-slate-100 hover:bg-slate-700', onclick: async () => {
+          await api('/auth/logout', { method: 'POST' });
+          location.reload();
+        } }, 'Log out'));
+    } else {
+      const next = encodeURIComponent(location.pathname + location.search);
+      account.replaceChildren(h('a', { href: `/auth/discord?next=${next}`, class: 'whitespace-nowrap rounded-lg bg-indigo-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-indigo-500' }, 'Log in with Discord'));
+    }
+  });
   button.addEventListener('click', (e) => {
     e.stopPropagation();
     setOpen(panel.classList.contains('hidden'));
   });
   document.addEventListener('click', (e) => { if (!panel.contains(e.target)) setOpen(false); });
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !panel.classList.contains('hidden')) { setOpen(false); button.focus(); } });
-  return h('header', { class: 'relative mx-auto flex max-w-3xl items-center justify-between' },
-    h('a', { href: '/', class: 'text-sm font-semibold text-emerald-400 hover:text-emerald-300' }, 'Cube Draft Voting'),
-    button, panel);
+  return h('header', { class: 'relative mx-auto flex max-w-3xl items-center justify-between gap-3' },
+    h('a', { href: '/', class: 'shrink-0 text-sm font-semibold text-emerald-400 hover:text-emerald-300' }, 'Cube Draft Voting'),
+    h('div', { class: 'flex min-w-0 items-center gap-2' }, account, button), panel);
 }
 
 document.body.prepend(siteNav());

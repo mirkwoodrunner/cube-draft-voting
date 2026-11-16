@@ -17,7 +17,6 @@
   }
   const { totals: t, drafts } = data;
   const displayName = plainName !== null ? data.name : data.player.name;
-  const bar = await accountBar();
   const stat = (label, value) => h('div', null,
     h('div', { class: 'text-xs uppercase tracking-wide text-slate-400' }, label),
     h('div', { class: 'text-2xl font-bold text-slate-50' }, value));
@@ -107,7 +106,6 @@
         h('p', { class: 'text-sm text-slate-400' }, `Player since ${day(data.player.since)}`)));
 
   app.replaceChildren(
-    bar,
     header,
     h('div', { class: 'space-y-4' },
       card(h('div', { class: 'grid grid-cols-2 gap-4 sm:grid-cols-4' },

@@ -325,8 +325,6 @@
     try { render(await api(base)); } catch { /* keep the last view; try again next tick */ }
   }
 
-  const bar = h('div');
-  accountBar().then((el) => { if (el) bar.replaceChildren(el); });
-  app.replaceChildren(bar, slots.top, h('div', { class: 'mt-4 space-y-4' }, slots.vote, slots.cubes, slots.ballots, slots.results, slots.danger));
+  app.replaceChildren(slots.top, h('div', { class: 'mt-4 space-y-4' }, slots.vote, slots.cubes, slots.ballots, slots.results, slots.danger));
   api(base).then(render).catch((err) => showError(app, err.status === 404 ? 'This admin link is not valid.' : err.message));
 })();

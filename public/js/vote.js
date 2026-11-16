@@ -12,7 +12,7 @@
   }
   const { session, cubes } = data;
   const saved = store.get(key) || {};
-  const [me, bar] = await Promise.all([getMe(), accountBar()]);
+  const me = await getMe();
 
   // A returning player gets their saved order back. A new player gets a random one.
   let order = shuffle(cubes.map((c) => String(c.id)));
@@ -84,7 +84,6 @@
     list, msg, saveBtn);
 
   app.replaceChildren(
-    bar,
     h('h1', { class: 'text-2xl font-bold text-emerald-400' }, session.title),
     h('p', { class: 'mb-5 mt-1 text-slate-400' }, closed ? 'Voting is closed.' : hasBallot ? 'You have already voted. You can change your vote below until voting closes.' : 'Rank every cube from your favorite to your least favorite.'),
     closed ? h('div', { class: 'mb-4 rounded-xl bg-amber-500/10 p-3 text-sm text-amber-200 ring-1 ring-amber-500/30' }, 'Voting has closed, so ballots can no longer be changed.') : '',
