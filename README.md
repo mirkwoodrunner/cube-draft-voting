@@ -92,6 +92,19 @@ Discord sometimes blocks Render's shared IP addresses. The fix is to send the tw
 2. In the Worker's Settings, under Variables and Secrets, add a secret named `PROXY_KEY` set to a long random string.
 3. In Render, set `DISCORD_API_BASE` to the Worker's URL (like `https://discord-proxy.yourname.workers.dev`) and `DISCORD_PROXY_KEY` to the same random string.
 
+### Draft night API
+
+A draft's `:id` is its public id, the one in its `/vote/` link. Match results are stored in the `draft_matches` table. Decks have a `draft_decks` table, with no endpoints yet.
+
+- `POST /api/drafts/:id/matches` logs a match from the reporter's side. Body: `{ round, opponent, wins, losses, draws }`. The reporter must be logged in with Discord and seated in a pod in the draft. A pairing the host already set up is filled in. A match that already has a result returns 409.
+- `PATCH /api/drafts/:id/matches/:matchId` corrects a score. Body: any of `{ player1Wins, player2Wins, draws }`. Sets `editedByOwner`.
+- `DELETE /api/drafts/:id/matches/:matchId` removes a match.
+- `GET /api/drafts/:id/standings` ranks each pod by match points (3 for a win, 1 for a draw), then game win percentage. Players level on both share a rank. `trophies` lists every 3-0 record with no draws.
+
+PATCH and DELETE need the site owner login or the draft's admin token in an `X-Admin-Token` header. On the admin dashboard, correcting a match that already had a result also sets `editedByOwner`. Filling in an empty pairing does not.
+
+Game win percentage is game points (3 per game won, 1 per drawn game) over 3 per game played. It has no 33% floor.
+
 ## Assignment engine (`src/borda.js`)
 
 A cube ranked r-th of K is worth K - r + 1 points. The engine chooses which cubes fire and who plays in each, in this priority:
@@ -136,5 +149,6 @@ Tables are created or upgraded automatically on startup. Existing sessions from 
 - `discord-proxy/worker.js` optional Cloudflare Worker for Discord's login calls
 - `src/records.js` player records across drafts, and unclaimed names
 - `src/pods.js` pod edits, teams, matches and standings
+- `src/matches.js` reads and writes the `draft_matches` table
 - `src/owner.js` owner login
 - `public/` Tailwind pages and scripts

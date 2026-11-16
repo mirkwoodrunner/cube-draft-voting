@@ -355,14 +355,28 @@ function generateTeamPairings(results, cubeId, rounds) {
   return r;
 }
 
+const TROPHY = { w: 3, l: 0, d: 0 };
+
 /**
- * Standings per pod, for display. Match points are 3 for a win, 1 for a draw.
+ * Game win percentage: game points (3 per game won, 1 per drawn game) over 3 per
+ * game played. Null before any games. No 33% floor: that floor is only there to
+ * stop weak opponents dragging down opponent percentages, which aren't used here.
+ */
+const gwpOf = (row) => {
+  const games = row.gw + row.gl + row.gd;
+  return games ? (3 * row.gw + row.gd) / (3 * games) : null;
+};
+
+/**
+ * Standings per pod. Match points are 3 for a win, 1 for a draw, 0 for a loss.
+ * Ties on points are broken by game win percentage, then shown in name order with
+ * the same rank. `trophy` is a 3-0 record with no draws.
  * In a team draft the team score is match wins, with a drawn match worth half.
  */
 function standings(results, teamMode) {
   const out = {};
   for (const pod of results.pods) {
-    const rows = new Map(pod.players.map((p) => [p.name, { name: p.name, team: p.team ?? null, w: 0, l: 0, d: 0, gw: 0, gl: 0, points: 0 }]));
+    const rows = new Map(pod.players.map((p) => [p.name, { name: p.name, team: p.team ?? null, w: 0, l: 0, d: 0, gw: 0, gl: 0, gd: 0, points: 0 }]));
     const team = [0, 0];
     const matches = (results.matches || []).filter((m) => m.cubeId === pod.cubeId && isPlayed(m));
     for (const m of matches) {
@@ -372,6 +386,7 @@ function standings(results, teamMode) {
         if (!row) continue; // player has since left the pod
         row.gw += gw;
         row.gl += gl;
+        row.gd += m.d || 0;
         if (outcome === 0) { row.d += 1; row.points += 1; } else if (won) { row.w += 1; row.points += 3; } else row.l += 1;
       }
       if (teamMode) {
@@ -385,8 +400,17 @@ function standings(results, teamMode) {
         }
       }
     }
-    const list = [...rows.values()].sort((a, b) => b.points - a.points || (b.gw - b.gl) - (a.gw - a.gl) || byName(a, b));
-    out[pod.cubeId] = { players: list, played: matches.length, teamScore: teamMode ? team : null };
+    for (const row of rows.values()) {
+      row.gwp = gwpOf(row);
+      row.trophy = row.w === TROPHY.w && row.l === TROPHY.l && row.d === TROPHY.d;
+    }
+    const g = (row) => (row.gwp === null ? -1 : row.gwp);
+    const list = [...rows.values()].sort((a, b) => b.points - a.points || g(b) - g(a) || byName(a, b));
+    list.forEach((row, i) => {
+      const prev = list[i - 1];
+      row.rank = prev && prev.points === row.points && g(prev) === g(row) ? prev.rank : i + 1;
+    });
+    out[pod.cubeId] = { players: list, played: matches.length, teamScore: teamMode ? team : null, trophies: list.filter((x) => x.trophy).map((x) => x.name) };
   }
   return out;
 }
