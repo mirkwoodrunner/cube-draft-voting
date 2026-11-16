@@ -136,9 +136,9 @@ async function saveToLibrary(db, cubes) {
   }
 }
 
-function requireOwner(req) {
+async function requireOwner(req) {
   if (!owner.enabled()) throw new HttpError(403, LOGIN_OFF);
-  if (!owner.isOwner(req)) throw new HttpError(401, 'Log in as the owner first');
+  if (!(await owner.isOwner(req))) throw new HttpError(401, 'Log in as the owner first');
 }
 
 // ---------- Cube Cobra preview ----------
@@ -330,7 +330,7 @@ async function adminView(s, req) {
     results: s.results || null,
     standings: s.results ? pods.standings(s.results, s.team_mode) : null,
     linked,
-    isOwner: owner.isOwner(req)
+    isOwner: await owner.isOwner(req)
   };
 }
 
@@ -712,13 +712,13 @@ const savedCubeDto = (c) => ({
 
 router.get('/library', wrap(async (req, res) => {
   const { rows } = await pool.query('SELECT * FROM saved_cubes ORDER BY lower(name), id');
-  res.json({ cubes: rows.map(savedCubeDto), canDelete: owner.isOwner(req) });
+  res.json({ cubes: rows.map(savedCubeDto), canDelete: await owner.isOwner(req) });
 }));
 
 // The owner adds a cube straight to the library without making a draft. Adding one that is
 // already saved updates its details, the same as saving it from a draft.
 router.post('/library', wrap(async (req, res) => {
-  requireOwner(req);
+  await requireOwner(req);
   const cube = await resolveCube({ ...(req.body || {}), save: true }, 0, 'Cube');
   await saveToLibrary(pool, [cube]);
   const { rows } = await pool.query('SELECT * FROM saved_cubes WHERE cubecobra_id = $1', [cube.cubecobraId]);
@@ -728,7 +728,7 @@ router.post('/library', wrap(async (req, res) => {
 // The owner corrects a saved cube's details. The Cube Cobra link stays the same, since it is what
 // identifies the cube. Drafts that already use the cube are not changed.
 router.put('/library/:id', wrap(async (req, res) => {
-  requireOwner(req);
+  await requireOwner(req);
   const id = Number(req.params.id);
   if (!Number.isInteger(id)) throw new HttpError(400, 'Invalid cube');
   const b = req.body || {};
@@ -749,7 +749,7 @@ router.put('/library/:id', wrap(async (req, res) => {
 }));
 
 router.delete('/library/:id', wrap(async (req, res) => {
-  requireOwner(req);
+  await requireOwner(req);
   const id = Number(req.params.id);
   if (!Number.isInteger(id)) throw new HttpError(400, 'Invalid cube');
   await pool.query('DELETE FROM saved_cubes WHERE id = $1', [id]);
@@ -930,7 +930,7 @@ router.get('/players/:id', wrap(async (req, res) => {
   res.json({
     player: { ...discord.playerDto(rows[0]), since: rows[0].created_at },
     isMe: Boolean(me && me.id === id),
-    isOwner: owner.isOwner(req),
+    isOwner: await owner.isOwner(req),
     totals: records.summarize(list.map((x) => x.entry)),
     drafts: list.map(draftDto)
   });
@@ -941,7 +941,7 @@ router.get('/players/:id', wrap(async (req, res) => {
  * Their seat and ballot in that draft become a plain name again, so it can be claimed.
  */
 router.post('/players/:id/unlink', wrap(async (req, res) => {
-  requireOwner(req);
+  await requireOwner(req);
   const id = Number(req.params.id);
   const sessionId = Number(req.body.sessionId);
   if (!Number.isInteger(id) || !Number.isInteger(sessionId)) throw new HttpError(400, 'Invalid player or draft');
@@ -966,24 +966,35 @@ router.post('/players/:id/unlink', wrap(async (req, res) => {
 
 // ---------- site owner ----------
 
-const LOGIN_OFF = 'Owner login is turned off. Set ADMIN_PASSWORD on the server to use it.';
+const LOGIN_OFF = 'Owner login is turned off. Set OWNER_DISCORD_IDS or ADMIN_PASSWORD on the server to use it.';
 
-router.get('/owner/me', (req, res) => res.json({ enabled: owner.enabled(), loggedIn: owner.isOwner(req) }));
+router.get('/owner/me', wrap(async (req, res) => {
+  const player = await discord.currentPlayer(req);
+  res.json({
+    enabled: owner.enabled(),
+    loggedIn: await owner.isOwner(req),
+    discordLogin: owner.discordEnabled(),
+    passwordLogin: owner.passwordEnabled(),
+    player: player ? discord.playerDto(player) : null
+  });
+}));
 
 router.post('/owner/login', wrap(async (req, res) => {
-  if (!owner.enabled()) throw new HttpError(403, LOGIN_OFF);
+  if (!owner.passwordEnabled()) throw new HttpError(403, 'Password login is turned off on this server');
   if (!(await owner.login(req, res, req.body.password))) throw new HttpError(401, 'Wrong password');
   res.json({ success: true });
 }));
 
-router.post('/owner/logout', (req, res) => {
+// Ends both kinds of owner login in this browser, so Log out on the owner page always works.
+router.post('/owner/logout', wrap(async (req, res) => {
+  await discord.logout(req, res);
   owner.logout(req, res);
   res.json({ success: true });
-});
+}));
 
 // Every draft, newest first, with a link to its dashboard. This is the record of past drafts.
 router.get('/owner/sessions', wrap(async (req, res) => {
-  requireOwner(req);
+  await requireOwner(req);
   const { rows } = await pool.query(`
     SELECT s.title, s.public_id, s.admin_token, s.status, s.team_mode, s.created_at, s.assigned_at,
       (SELECT count(*)::int FROM votes v WHERE v.session_id = s.id) AS votes,
