@@ -20,11 +20,26 @@ Ranked-choice voting and pod assignment for Magic: The Gathering cube drafts.
 - **Add a late player.** After assigning, "Add a player who joined after voting" puts a new name straight into a pod. They have no ballot, so they're tagged "joined late" and left out of the happiness score. In a team draft they join the smaller team.
 - **Remove a player.** "Move to..." then "Remove from draft" takes someone out without touching anyone else's seat. Their ballot is deleted so a re-run won't seat them. Their unplayed pairings are dropped. Results they already played stay in the match list.
 - **Rename a player.** The ✎ next to a voter's name, or "Move to..." then "Rename..." in the pods. Works before or after assigning. It updates their ballot, their seat and every match they're in. Names must stay unique, ignoring capitals.
+- **Deck photos.** Each seated player has a "+ Photo" button to add a photo of their deck for them. The ✕ next to the photo removes it.
+- **Share results.** "Share results" copies the standings as text, ready to paste into Discord. On a phone it opens the share menu instead. The text ends with the player link, which shows the full results.
 - **Match results.** Each pod has a match list. Add a match with two players, a round and the games won. Leave scores blank to add a pairing now and fill it in later. Standings use 3 points for a match win and 1 for a draw.
 - **Ballots.** Every voter's full ranking is listed under Ballots.
 - **Delete the draft.** At the bottom of the dashboard. Removes its ballots, pods and match results. Cubes in the library are kept. The owner page has a Delete button on each draft too.
 
 Adding or removing a cube after pods were assigned clears the assignment, including pod edits, late players and match results. Re-running the assignment or reopening voting does the same. The dashboard warns before each of these.
+
+### Draft night (player page)
+
+Once pods are assigned, the player link (`/vote/:id`) turns into the results page. It shows every pod's standings, matches and deck photos, and refreshes every 30 seconds. The ballot folds away at the bottom.
+
+A player who logged in with Discord, or who opens the link in the browser they voted from, also gets:
+
+- **Report a match.** Pick the round and opponent, then the games each side won. A pairing the host set up is picked first. Once a result is in, only the host can change it.
+- **Deck photo.** Add, replace or remove a photo of their own deck. The browser shrinks it to 1600 pixels on the long side before sending, so phone photos upload fast.
+
+Players who joined late have no ballot, so they need Discord login or the host to add their photo and results.
+
+The "Share results" button works the same as on the dashboard. The dashboard refreshes every 15 seconds on draft night so reported matches and photos show up, except while you're typing a score.
 
 ### Team draft
 
@@ -94,12 +109,19 @@ Discord sometimes blocks Render's shared IP addresses. The fix is to send the tw
 
 ### Draft night API
 
-A draft's `:id` is its public id, the one in its `/vote/` link. Match results are stored in the `draft_matches` table. Decks have a `draft_decks` table, with no endpoints yet.
+A draft's `:id` is its public id, the one in its `/vote/` link. Match results are stored in the `draft_matches` table. Deck photos are stored in the `draft_decks` table.
 
-- `POST /api/drafts/:id/matches` logs a match from the reporter's side. Body: `{ round, opponent, wins, losses, draws }`. The reporter must be logged in with Discord and seated in a pod in the draft. A pairing the host already set up is filled in. A match that already has a result returns 409.
+A player is found by their Discord login, or else by their ballot's edit token in an `X-Voter-Token` header. They must be seated in a pod.
+
+- `POST /api/drafts/:id/matches` logs a match from the reporter's side. Body: `{ round, opponent, wins, losses, draws }`. A pairing the host already set up is filled in. A match that already has a result returns 409.
 - `PATCH /api/drafts/:id/matches/:matchId` corrects a score. Body: any of `{ player1Wins, player2Wins, draws }`. Sets `editedByOwner`.
 - `DELETE /api/drafts/:id/matches/:matchId` removes a match.
-- `GET /api/drafts/:id/standings` ranks each pod by match points (3 for a win, 1 for a draw), then game win percentage. Players level on both share a rank. `trophies` lists every 3-0 record with no draws.
+- `GET /api/drafts/:id/standings` ranks each pod by match points (3 for a win, 1 for a draw), then game win percentage. Players level on both share a rank. `trophies` lists every 3-0 record with no draws. Each pod also lists its `matches`, and each player has a `photoUrl` or null. `me` is the caller's seat, `{ name, cubeId }`, or null.
+- `PUT /api/drafts/:id/decks/mine/photo` sets the caller's deck photo. The body is the image itself (JPEG, PNG or WebP, up to 8 MB). The type is checked from the file's bytes. `DELETE` on the same path removes it.
+- `GET /api/drafts/:id/decks/:deckId/photo` serves a photo. Its URL changes when the photo does, so it is cached.
+- `PUT /api/admin/:adminToken/decks/photo?name=...` and `DELETE` on the same path let the host set or remove anyone's photo.
+
+Renaming a player moves their photo with them. Removing them from the draft deletes it.
 
 PATCH and DELETE need the site owner login or the draft's admin token in an `X-Admin-Token` header. On the admin dashboard, correcting a match that already had a result also sets `editedByOwner`. Filling in an empty pairing does not.
 
@@ -150,5 +172,6 @@ Tables are created or upgraded automatically on startup. Existing sessions from 
 - `src/records.js` player records across drafts, and unclaimed names
 - `src/pods.js` pod edits, teams, matches and standings
 - `src/matches.js` reads and writes the `draft_matches` table
+- `src/decks.js` deck photos in the `draft_decks` table
 - `src/owner.js` owner login
 - `public/` Tailwind pages and scripts

@@ -83,6 +83,17 @@
       h('p', { class: 'text-sm text-slate-400' }, 'Put the cube you most want to draft at the top. Drag the handle, or use the arrows.')),
     list, msg, saveBtn);
 
+  // Once pods are assigned the page is about the draft itself. The ballot folds away.
+  if (session.status === 'assigned') {
+    app.replaceChildren(
+      h('h1', { class: 'text-2xl font-bold text-emerald-400' }, session.title),
+      h('div', { class: 'mt-4' }, draftNight(sessionId, saved.token || null)),
+      h('details', { class: 'mt-6 rounded-2xl bg-slate-800 p-5 ring-1 ring-slate-700' },
+        h('summary', { class: 'cursor-pointer font-semibold' }, hasBallot ? 'Your ballot' : 'Ballot'),
+        h('div', { class: 'mt-4' }, form)));
+    return;
+  }
+
   app.replaceChildren(
     h('h1', { class: 'text-2xl font-bold text-emerald-400' }, session.title),
     h('p', { class: 'mb-5 mt-1 text-slate-400' }, closed ? 'Voting is closed.' : hasBallot ? 'You have already voted. You can change your vote below until voting closes.' : 'Rank every cube from your favorite to your least favorite.'),

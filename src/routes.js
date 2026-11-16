@@ -10,6 +10,7 @@ const owner = require('./owner');
 const discord = require('./discord');
 const records = require('./records');
 const matches = require('./matches');
+const decks = require('./decks');
 
 const router = express.Router();
 
@@ -349,6 +350,7 @@ async function adminView(s, req) {
     results: s.results || null,
     standings: s.results ? pods.standings(s.results, s.team_mode) : null,
     linked,
+    photos: await decks.photosByName(pool, s.id, s.public_id),
     isOwner: await owner.isOwner(req)
   };
 }
@@ -711,6 +713,7 @@ router.post('/admin/:adminToken/pods/remove', wrap(async (req, res) => {
   await editResults(s, async (results, row, client) => {
     const next = pods.removePlayer(results, name, await podContext(s, row, client));
     await client.query('DELETE FROM votes WHERE session_id = $1 AND player_name = $2', [s.id, name]);
+    await client.query('DELETE FROM draft_decks WHERE draft_id = $1 AND player_name = $2', [s.id, name]);
     return next;
   });
   await sendView(req, res);
@@ -785,6 +788,7 @@ async function standingsView(s, db = pool) {
   const { rows: votes } = await db.query('SELECT player_name, player_id FROM votes WHERE session_id = $1 AND player_id IS NOT NULL', [s.id]);
   const linked = records.linkedNames(s.results, votes);
   const all = pods.standings(s.results, s.team_mode);
+  const photos = await decks.photosByName(db, s.id, s.public_id);
   const out = s.results.pods.map((pod) => {
     const st = all[pod.cubeId];
     return {
@@ -805,8 +809,10 @@ async function standingsView(s, db = pool) {
         gamesLost: r.gl,
         gamesDrawn: r.gd,
         gwp: r.gwp,
-        trophy: r.trophy
-      }))
+        trophy: r.trophy,
+        photoUrl: photos[r.name] ? photos[r.name].photoUrl : null
+      })),
+      matches: (s.results.matches || []).filter((m) => m.cubeId === pod.cubeId).map(matches.dto)
     };
   });
   const trophies = out.flatMap((pod) => pod.players.filter((p) => p.trophy).map((p) => ({ name: p.name, playerId: p.playerId, cubeId: pod.cubeId, cubeName: pod.cubeName })));
@@ -819,15 +825,40 @@ async function matchById(s, id) {
 }
 
 /**
- * A player logs the result of their own match. They must be logged in with Discord and
- * seated in a pod in this draft. Body: { round, opponent, wins, losses, draws }, counted
- * from the reporter's side. A pairing the host already set up is filled in. A match that
- * already has a result can only be changed by the host or the owner.
+ * The seat in a pod that belongs to whoever sent the request: the name linked to their
+ * Discord login, or else the ballot their browser holds the edit token for
+ * (X-Voter-Token). Returns { name, cubeId, playerId } or null.
+ */
+async function mySeat(req, s, results, db = pool) {
+  if (!results || !results.pods) return null;
+  const { rows: votes } = await db.query('SELECT player_name, player_id, token_hash FROM votes WHERE session_id = $1', [s.id]);
+  const linked = records.linkedNames(results, votes.filter((v) => v.player_id !== null));
+  const seat = (name) => {
+    const pod = results.pods.find((p) => p.players.some((x) => x.name === name));
+    return pod ? { name, cubeId: pod.cubeId, playerId: linked.get(name) ?? null } : null;
+  };
+  const me = await discord.currentPlayer(req);
+  if (me) {
+    for (const [name, id] of linked) if (id === me.id && seat(name)) return seat(name);
+  }
+  const token = req.get('x-voter-token');
+  if (token) {
+    const v = votes.find((x) => x.token_hash === sha256(token));
+    if (v) return seat(v.player_name);
+  }
+  return null;
+}
+
+const NOT_SEATED = 'You are not seated in this draft. Log in with Discord, or open this page in the browser you voted from.';
+
+/**
+ * A player logs the result of their own match. They are found by their Discord login or
+ * the edit token of their ballot (see mySeat), and must be seated in a pod. Body:
+ * { round, opponent, wins, losses, draws }, counted from the reporter's side. A pairing
+ * the host already set up is filled in. A match that already has a result can only be
+ * changed by the host or the owner.
  */
 router.post('/drafts/:id/matches', wrap(async (req, res) => {
-  if (!discord.enabled()) throw new HttpError(403, AUTH_OFF);
-  const me = await discord.currentPlayer(req);
-  if (!me) throw new HttpError(401, 'Log in with Discord to report a match');
   const s = await sessionByPublicId(req.params.id);
   const opponent = String(req.body.opponent || '');
   const round = Number(req.body.round);
@@ -835,13 +866,12 @@ router.post('/drafts/:id/matches', wrap(async (req, res) => {
   let savedId = null;
 
   await editResults(s, async (results, row, client) => {
-    const { rows: votes } = await client.query('SELECT player_name, player_id FROM votes WHERE session_id = $1 AND player_id IS NOT NULL', [s.id]);
-    const mine = new Set([...records.linkedNames(results, votes)].filter(([, id]) => id === me.id).map(([name]) => name));
-    const pod = results.pods.find((p) => p.players.some((x) => mine.has(x.name)));
-    if (!pod) throw new HttpError(403, 'You are not seated in this draft');
-    const name = pod.players.find((x) => mine.has(x.name)).name;
+    const seat = await mySeat(req, s, results, client);
+    if (!seat) throw new HttpError(403, NOT_SEATED);
+    const name = seat.name;
+    if (opponent === name) throw new HttpError(400, 'Pick your opponent');
 
-    const pairing = results.matches.find((m) => m.cubeId === pod.cubeId && m.round === round &&
+    const pairing = results.matches.find((m) => m.cubeId === seat.cubeId && m.round === round &&
       ((m.p1 === name && m.p2 === opponent) || (m.p1 === opponent && m.p2 === name)));
     let next;
     if (pairing) {
@@ -849,12 +879,12 @@ router.post('/drafts/:id/matches', wrap(async (req, res) => {
       next = pods.updateMatch(results, pairing.id, pairing.p1 === name ? score : { w1: score.w2, w2: score.w1, d: score.d });
       savedId = pairing.id;
     } else {
-      next = pods.addMatch(results, { cubeId: pod.cubeId, round, p1: name, p2: opponent, ...score }, row.team_mode);
+      next = pods.addMatch(results, { cubeId: seat.cubeId, round, p1: name, p2: opponent, ...score }, row.team_mode);
       savedId = next.matches[next.matches.length - 1].id;
     }
     const saved = next.matches.find((m) => m.id === savedId);
     if (!isPlayedMatch(saved)) throw new HttpError(400, 'Enter games won for both players');
-    saved.reportedBy = me.id;
+    saved.reportedBy = seat.playerId;
     return next;
   });
 
@@ -896,7 +926,81 @@ router.get('/drafts/:id/standings', wrap(async (req, res) => {
   const s = await sessionByPublicId(req.params.id);
   await matches.hydrate(pool, [s]);
   res.set('Cache-Control', 'no-store');
-  res.json(await standingsView(s));
+  const seat = s.status === 'assigned' ? await mySeat(req, s, s.results) : null;
+  res.json({ ...(await standingsView(s)), me: seat && { name: seat.name, cubeId: seat.cubeId } });
+}));
+
+// ---------- draft night: deck photos ----------
+// The body is the image itself (JPEG, PNG or WebP), not JSON.
+
+const photoBody = express.raw({ type: () => true, limit: decks.MAX_PHOTO_BYTES });
+
+function readPhoto(req) {
+  const mime = decks.sniffImage(req.body);
+  if (!mime) throw new HttpError(400, 'The photo must be a JPEG, PNG or WebP image');
+  return { data: req.body, mime };
+}
+
+async function assignedDraft(s) {
+  if (s.status !== 'assigned' || !s.results) throw new HttpError(409, 'Pods are not assigned yet');
+  return s;
+}
+
+router.get('/drafts/:id/decks/:deckId/photo', wrap(async (req, res) => {
+  const s = await sessionByPublicId(req.params.id);
+  const deckId = Number(req.params.deckId);
+  const { rows } = Number.isInteger(deckId)
+    ? await pool.query('SELECT photo_data, photo_mime_type FROM draft_decks WHERE id = $1 AND draft_id = $2 AND photo_data IS NOT NULL', [deckId, s.id])
+    : { rows: [] };
+  if (!rows[0]) throw new HttpError(404, 'Photo not found');
+  // The URL changes whenever the photo does (?v=), so it can be cached for a long time.
+  res.set('Cache-Control', 'public, max-age=31536000, immutable');
+  res.set('X-Content-Type-Options', 'nosniff');
+  res.type(rows[0].photo_mime_type).send(rows[0].photo_data);
+}));
+
+// A player adds or replaces the photo of their own deck.
+router.put('/drafts/:id/decks/mine/photo', photoBody, wrap(async (req, res) => {
+  const s = await assignedDraft(await sessionByPublicId(req.params.id));
+  const { data, mime } = readPhoto(req);
+  const seat = await mySeat(req, s, s.results);
+  if (!seat) throw new HttpError(403, NOT_SEATED);
+  await decks.savePhoto(pool, s.id, seat.name, seat.playerId, data, mime);
+  res.json({ success: true });
+}));
+
+router.delete('/drafts/:id/decks/mine/photo', wrap(async (req, res) => {
+  const s = await assignedDraft(await sessionByPublicId(req.params.id));
+  const seat = await mySeat(req, s, s.results);
+  if (!seat) throw new HttpError(403, NOT_SEATED);
+  await decks.removePhoto(pool, s.id, seat.name);
+  res.json({ success: true });
+}));
+
+// The host adds or removes a photo for anyone seated, for players who aren't logged in.
+async function hostSeatName(s, name) {
+  await assignedDraft(s);
+  const seated = s.results.pods.some((p) => p.players.some((x) => x.name === name));
+  if (!seated) throw new HttpError(404, `${name || 'That player'} is not seated in a pod`);
+  const { rows: votes } = await pool.query('SELECT player_name, player_id FROM votes WHERE session_id = $1 AND player_id IS NOT NULL', [s.id]);
+  return records.linkedNames(s.results, votes).get(name) ?? null;
+}
+
+router.put('/admin/:adminToken/decks/photo', photoBody, wrap(async (req, res) => {
+  const s = await sessionByAdminToken(req.params.adminToken);
+  const name = String(req.query.name || '');
+  const { data, mime } = readPhoto(req);
+  const playerId = await hostSeatName(s, name);
+  await decks.savePhoto(pool, s.id, name, playerId, data, mime);
+  await sendView(req, res);
+}));
+
+router.delete('/admin/:adminToken/decks/photo', wrap(async (req, res) => {
+  const s = await sessionByAdminToken(req.params.adminToken);
+  const name = String(req.query.name || '');
+  await assignedDraft(s);
+  await decks.removePhoto(pool, s.id, name);
+  await sendView(req, res);
 }));
 
 // Deletes the whole draft: cubes, ballots, pods and match results. Cubes saved in the library are kept.
@@ -1239,6 +1343,7 @@ router.use((req, res) => res.status(404).json({ error: 'Not found' }));
 router.use((err, req, res, next) => {
   if (err instanceof HttpError) return res.status(err.status).json({ error: err.message, code: err.code });
   if (err.type === 'entity.parse.failed') return res.status(400).json({ error: 'Invalid JSON' });
+  if (err.type === 'entity.too.large') return res.status(413).json({ error: 'That upload is too large' });
   console.error(err);
   res.status(500).json({ error: 'Something went wrong on the server' });
 });

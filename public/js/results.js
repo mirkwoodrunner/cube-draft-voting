@@ -63,6 +63,20 @@ function moveSelect(d, name, currentCubeId, act) {
   return sel;
 }
 
+/** The player's deck photo with buttons to add, replace or remove it. */
+function deckPhoto(d, name, act) {
+  const photo = d.photos && d.photos[name];
+  const path = `/decks/photo?name=${encodeURIComponent(name)}`;
+  const pick = photoPicker(photo ? 'Photo' : '+ Photo', (file, btn) => act(path, btn, { method: 'PUT', file }),
+    'rounded-lg bg-slate-700 px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-slate-600 disabled:opacity-50');
+  return h('span', { class: 'flex items-center gap-1.5' },
+    photo && photoThumb(photo.photoUrl, `${name}'s deck`, 'h-8 w-8'),
+    pick,
+    photo && miniBtn('bg-slate-700 hover:bg-red-600', '✕', (e) => {
+      if (confirm(`Remove ${name}'s deck photo?`)) act(path, e.currentTarget, { method: 'DELETE' });
+    }, { 'aria-label': `Remove ${name}'s deck photo`, title: 'Remove deck photo' }));
+}
+
 function playerRow(d, pod, p, act) {
   const teamMode = d.session.teamMode;
   return h('li', { class: 'flex flex-wrap items-center justify-between gap-2 py-1.5 text-sm' },
@@ -72,7 +86,8 @@ function playerRow(d, pod, p, act) {
       p.late
         ? h('span', { class: 'rounded-full bg-violet-600/30 px-2 py-0.5 text-xs text-violet-200' }, 'joined late')
         : h('span', { class: `rounded-full px-2 py-0.5 text-xs ${p.rank === 1 ? 'bg-emerald-600/30 text-emerald-300' : 'bg-slate-700 text-slate-300'}` }, `${ordinal(p.rank)} choice`)),
-    h('span', { class: 'flex items-center gap-1.5' },
+    h('span', { class: 'flex flex-wrap items-center gap-1.5' },
+      deckPhoto(d, p.name, act),
       teamMode && miniBtn('bg-slate-700 hover:bg-slate-600', `To ${TEAM_NAMES[p.team === 1 ? 0 : 1]}`, (e) => act('/pods/switch-team', e.currentTarget, { body: { name: p.name } })),
       moveSelect(d, p.name, pod.cubeId, act)));
 }
@@ -263,6 +278,12 @@ function resultsView(d, dupes, act) {
       results.edited && h('p', { class: 'text-xs text-amber-300' }, 'You have changed these pods by hand. Re-running the assignment replaces your changes.'),
       h('p', { class: 'text-xs text-slate-400' }, 'Use "Move to" on any player to change pods or remove them from the draft.', d.session.teamMode ? ' Use the team button to swap a player to the other team.' : ''),
       addPlayerForm(d, act)),
+    rCard(
+      h('div', { class: 'flex flex-wrap items-center justify-between gap-3' },
+        h('div', { class: 'min-w-0' },
+          h('h3', { class: 'font-semibold' }, 'Share results'),
+          h('p', { class: 'text-xs text-slate-400' }, 'Players see pods, standings and deck photos at the player voting link. They can report their own matches and add a deck photo there.')),
+        miniBtn('bg-indigo-600 hover:bg-indigo-500', 'Share results', (e) => shareResults(d.session.id, e.currentTarget).catch((err) => alert(err.message))))),
     results.pods.map((p) => podCard(d, p, dupes, act)),
     results.unassigned.length > 0 && rCard(
       h('h3', { class: 'font-semibold text-amber-300' }, `Unassigned (${results.unassigned.length}), needs your review`),
