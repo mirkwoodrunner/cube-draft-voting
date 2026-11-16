@@ -129,6 +129,7 @@
     const { session, cubes } = d;
     const open = session.status === 'open';
     let ballot = null;
+    const myName = ((await getMe()).player || {}).name || '';
     try { ({ ballot } = await api(`${base}/ballot`)); } catch { /* treat as no ballot */ }
 
     if (!open) {
@@ -148,7 +149,7 @@
 
     function showForm() {
       const ranking = rankList(cubes, ballot ? orderFromBallot(cubes, ballot.preferences) : shuffle(cubes.map((c) => String(c.id))));
-      const nameInput = h('input', { required: true, maxlength: 40, value: ballot ? ballot.playerName : (store.get(nameKey) || ''), placeholder: 'Your name', class: 'mt-1 w-full rounded-lg bg-slate-900 px-3 py-2 ring-1 ring-slate-600 focus:outline-none focus:ring-emerald-500' });
+      const nameInput = h('input', { required: true, maxlength: 40, value: ballot ? ballot.playerName : (store.get(nameKey) || myName), placeholder: 'Your name', class: 'mt-1 w-full rounded-lg bg-slate-900 px-3 py-2 ring-1 ring-slate-600 focus:outline-none focus:ring-emerald-500' });
       const save = h('button', { class: 'w-full rounded-xl bg-emerald-600 px-4 py-3 text-lg font-semibold text-white hover:bg-emerald-500 disabled:opacity-50' }, ballot ? 'Update my vote' : 'Submit my vote');
       body.replaceChildren(h('form', { class: 'space-y-4', onsubmit: async (e) => {
         e.preventDefault();

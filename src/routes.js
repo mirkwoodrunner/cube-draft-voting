@@ -320,7 +320,8 @@ router.post('/sessions/:sessionId/vote', wrap(async (req, res) => {
 
 // ---------- admin dashboard ----------
 
-// The admin's own ballot is keyed to their admin token, so no separate player link is needed.
+// The admin's own ballot is keyed to their admin token. When the admin is logged in
+// with Discord, linkAdminBallot also ties it to their player record.
 const adminVoterToken = (adminToken) => `admin:${adminToken}`;
 
 async function adminView(s, req) {
@@ -366,7 +367,37 @@ async function linkedPlayers(byName) {
 /** Sends the refreshed dashboard after an admin action. */
 const sendView = async (req, res) => res.json(await adminView(await sessionByAdminToken(req.params.adminToken), req));
 
+/**
+ * Links the admin's own ballot to the logged-in Discord player, so the draft lands on
+ * their player record. Skipped when that player already has another ballot in this draft
+ * (for example one cast through the public voting link), which already links them.
+ * After pods are assigned, the match table and the draft's name map are updated too.
+ */
+async function linkAdminBallot(s, req) {
+  const player = await discord.currentPlayer(req);
+  if (!player) return;
+  await inTransaction(async (client) => {
+    const { rows } = await client.query(
+      `UPDATE votes SET player_id = $3
+       WHERE session_id = $1 AND token_hash = $2 AND player_id IS NULL
+         AND NOT EXISTS (SELECT 1 FROM votes WHERE session_id = $1 AND player_id = $3)
+       RETURNING player_name`,
+      [s.id, sha256(adminVoterToken(s.admin_token)), player.id]
+    );
+    if (!rows[0]) return;
+    const { rows: [fresh] } = await client.query('SELECT * FROM sessions WHERE id = $1 FOR UPDATE', [s.id]);
+    if (!fresh.results) return;
+    const name = rows[0].player_name;
+    const playerIds = fresh.results.playerIds || {};
+    if (playerIds[name] !== undefined || Object.values(playerIds).map(Number).includes(player.id)) return;
+    await matches.hydrate(client, [fresh]);
+    const results = { ...fresh.results, playerIds: { ...playerIds, [name]: player.id } };
+    await client.query('UPDATE sessions SET results = $2 WHERE id = $1', [s.id, await matches.store(client, s.id, results)]);
+  });
+}
+
 router.get('/admin/:adminToken', wrap(async (req, res) => {
+  await linkAdminBallot(await sessionByAdminToken(req.params.adminToken), req);
   await sendView(req, res);
 }));
 
@@ -451,6 +482,7 @@ router.post('/admin/:adminToken/vote', wrap(async (req, res) => {
   const s = await sessionByAdminToken(req.params.adminToken);
   const token = adminVoterToken(s.admin_token);
   const out = await saveBallot(s, playerName, req.body.preferences, token, token);
+  await linkAdminBallot(s, req);
   res.json({ success: true, updated: out.updated });
 }));
 
