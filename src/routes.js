@@ -28,19 +28,33 @@ class HttpError extends Error {
 
 const wrap = (fn) => (req, res, next) => fn(req, res, next).catch(next);
 
-/** Runs `fn(client)` in a transaction and returns what it returns. */
+/**
+ * Runs `fn(client)` in a transaction and returns what it returns.
+ *
+ * Inside `fn`, use only `client`, never `pool`. Asking the pool for a second connection
+ * while this one holds a lock can deadlock the whole pool under load.
+ * Waiting on a lock gives up after LOCK_TIMEOUT, so a stuck request fails with a 503
+ * instead of holding its connection forever.
+ */
+const LOCK_TIMEOUT = '5s';
+const STATEMENT_TIMEOUT = '15s';
 async function inTransaction(fn) {
   const client = await pool.connect();
+  // The server can drop a connection mid-transaction. Without a listener that error crashes the process.
+  const onError = (err) => console.error('Database connection error:', err.message);
+  client.on('error', onError);
+  let broken = null;
   try {
-    await client.query('BEGIN');
+    await client.query(`BEGIN; SET LOCAL lock_timeout = '${LOCK_TIMEOUT}'; SET LOCAL statement_timeout = '${STATEMENT_TIMEOUT}'`);
     const out = await fn(client);
     await client.query('COMMIT');
     return out;
   } catch (err) {
-    await client.query('ROLLBACK').catch(() => {});
+    await client.query('ROLLBACK').catch((e) => { broken = e; });
     throw err;
   } finally {
-    client.release();
+    client.off('error', onError);
+    client.release(broken || undefined); // a connection that can't roll back is thrown away, not reused
   }
 }
 const newToken = (bytes) => crypto.randomBytes(bytes).toString('base64url');
@@ -142,14 +156,21 @@ async function resolveCubeList(input, emptyMessage) {
   return cubes;
 }
 
-/** Adds the cubes marked "save" to the library, or refreshes their saved details. */
-async function saveToLibrary(db, cubes) {
+/**
+ * Adds the cubes marked "save" to the library. Anyone making a draft can add a new cube.
+ * Only the owner (`overwrite`) can change the details of a cube already saved, so a
+ * stranger's draft can't rewrite the library. Everyone refreshes its last-used time.
+ */
+async function saveToLibrary(db, cubes, { overwrite }) {
+  const update = overwrite
+    ? `url = EXCLUDED.url, name = EXCLUDED.name, author = EXCLUDED.author, card_count = EXCLUDED.card_count,
+       min_players = EXCLUDED.min_players, max_players = EXCLUDED.max_players, last_used_at = now()`
+    : 'last_used_at = now()';
   for (const c of cubes.filter((x) => x.save)) {
     await db.query(
       `INSERT INTO saved_cubes (cubecobra_id, url, name, author, card_count, min_players, max_players)
        VALUES ($1, $2, $3, $4, $5, $6, $7)
-       ON CONFLICT (cubecobra_id) DO UPDATE SET url = EXCLUDED.url, name = EXCLUDED.name, author = EXCLUDED.author,
-         card_count = EXCLUDED.card_count, min_players = EXCLUDED.min_players, max_players = EXCLUDED.max_players, last_used_at = now()`,
+       ON CONFLICT (cubecobra_id) DO UPDATE SET ${update}`,
       [c.cubecobraId, c.url, c.name, c.author, c.cardCount, c.minPlayers, c.maxPlayers]
     );
   }
@@ -180,9 +201,8 @@ router.post('/sessions', wrap(async (req, res) => {
 
   const publicId = newToken(8);
   const adminToken = newToken(24);
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
+  const overwrite = await owner.isOwner(req); // before the transaction: it uses the pool
+  await inTransaction(async (client) => {
     const { rows } = await client.query(
       'INSERT INTO sessions (title, public_id, admin_token, team_mode) VALUES ($1, $2, $3, $4) RETURNING id',
       [title, publicId, adminToken, teamMode]
@@ -194,14 +214,8 @@ router.post('/sessions', wrap(async (req, res) => {
         [rows[0].id, c.name, c.url, c.cubecobraId, c.author, c.cardCount, c.minPlayers, c.maxPlayers]
       );
     }
-    await saveToLibrary(client, cubes);
-    await client.query('COMMIT');
-  } catch (err) {
-    await client.query('ROLLBACK').catch(() => {});
-    throw err;
-  } finally {
-    client.release();
-  }
+    await saveToLibrary(client, cubes, { overwrite });
+  });
 
   res.status(201).json({
     sessionId: publicId,
@@ -252,9 +266,7 @@ async function saveBallot(s, playerName, prefs, voterToken, insertToken = null, 
   }
   const preferences = ranked.map(Number);
 
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
+  return inTransaction(async (client) => {
     // Holds off a concurrent "Close Voting" or cube edit until this ballot is saved.
     const { rows: st } = await client.query('SELECT status FROM sessions WHERE id = $1 FOR SHARE', [s.id]);
     if (st[0].status !== 'open') throw new HttpError(403, 'Voting is closed for this session', 'closed');
@@ -302,14 +314,8 @@ async function saveBallot(s, playerName, prefs, voterToken, insertToken = null, 
       );
       if (!inserted.rowCount) throw nameTaken();
     }
-    await client.query('COMMIT');
     return { success: true, voterToken: issued, updated: isUpdate };
-  } catch (err) {
-    await client.query('ROLLBACK').catch(() => {});
-    throw err;
-  } finally {
-    client.release();
-  }
+  });
 }
 
 router.post('/sessions/:sessionId/vote', wrap(async (req, res) => {
@@ -335,6 +341,7 @@ async function adminView(s, req) {
     [s.id]
   );
   const linked = await linkedPlayers(records.linkedNames(s.results, votes));
+  const deckRows = Object.entries(await decks.byName(pool, s.id, s.public_id));
   return {
     session: {
       id: s.public_id,
@@ -351,8 +358,8 @@ async function adminView(s, req) {
     results: s.results || null,
     standings: s.results ? pods.standings(s.results, s.team_mode) : null,
     linked,
-    photos: await decks.photosByName(pool, s.id, s.public_id),
-    deckNames: Object.fromEntries(Object.entries(await decks.byName(pool, s.id, s.public_id)).filter(([, x]) => x.deckName).map(([n, x]) => [n, x.deckName])),
+    photos: Object.fromEntries(deckRows.filter(([, x]) => x.photoUrl).map(([n, x]) => [n, { id: x.id, photoUrl: x.photoUrl }])),
+    deckNames: Object.fromEntries(deckRows.filter(([, x]) => x.deckName).map(([n, x]) => [n, x.deckName])),
     isOwner: await owner.isOwner(req)
   };
 }
@@ -381,6 +388,9 @@ async function linkAdminBallot(s, req) {
   const player = await discord.currentPlayer(req);
   if (!player) return;
   await inTransaction(async (client) => {
+    // The session row is locked before any ballot, the same order as every other write, so they can't deadlock.
+    const { rows: [fresh] } = await client.query('SELECT * FROM sessions WHERE id = $1 FOR UPDATE', [s.id]);
+    if (!fresh) return;
     const { rows } = await client.query(
       `UPDATE votes SET player_id = $3
        WHERE session_id = $1 AND token_hash = $2 AND player_id IS NULL
@@ -388,9 +398,7 @@ async function linkAdminBallot(s, req) {
        RETURNING player_name`,
       [s.id, sha256(adminVoterToken(s.admin_token)), player.id]
     );
-    if (!rows[0]) return;
-    const { rows: [fresh] } = await client.query('SELECT * FROM sessions WHERE id = $1 FOR UPDATE', [s.id]);
-    if (!fresh.results) return;
+    if (!rows[0] || !fresh.results) return;
     const name = rows[0].player_name;
     const playerIds = fresh.results.playerIds || {};
     if (playerIds[name] !== undefined || Object.values(playerIds).map(Number).includes(player.id)) return;
@@ -413,20 +421,21 @@ router.post('/admin/:adminToken/close', wrap(async (req, res) => {
   await sendView(req, res);
 }));
 
+// The status check, the reads and the write all happen under one lock, so a Reopen or a
+// ballot change in another tab can't land between them.
 router.post('/admin/:adminToken/assign', wrap(async (req, res) => {
   const s = await sessionByAdminToken(req.params.adminToken);
-  if (s.status === 'open') throw new HttpError(409, 'Close voting before running the assignment');
-
-  const cubes = (await loadCubes(s.id)).map((c) => ({
-    id: String(c.id), name: c.name, author: c.author, url: c.url,
-    minPlayers: c.min_players, maxPlayers: c.max_players
-  }));
-  const { rows: votes } = await pool.query('SELECT player_name, preferences, player_id FROM votes WHERE session_id = $1', [s.id]);
-  let results = assignPods(cubes, votes.map((v) => ({ name: v.player_name, preferences: v.preferences })));
-  const playerIds = Object.fromEntries(votes.filter((v) => v.player_id !== null).map((v) => [v.player_name, v.player_id]));
-  results = { ...(s.team_mode ? pods.setTeamMode(results, true) : results), matches: [], playerIds, computedAt: new Date().toISOString() };
-
   await inTransaction(async (client) => {
+    const { rows: [row] } = await client.query('SELECT status, team_mode FROM sessions WHERE id = $1 FOR UPDATE', [s.id]);
+    if (row.status === 'open') throw new HttpError(409, 'Close voting before running the assignment');
+    const cubes = (await loadCubes(s.id, client)).map((c) => ({
+      id: String(c.id), name: c.name, author: c.author, url: c.url,
+      minPlayers: c.min_players, maxPlayers: c.max_players
+    }));
+    const { rows: votes } = await client.query('SELECT player_name, preferences, player_id FROM votes WHERE session_id = $1', [s.id]);
+    let results = assignPods(cubes, votes.map((v) => ({ name: v.player_name, preferences: v.preferences })));
+    const playerIds = Object.fromEntries(votes.filter((v) => v.player_id !== null).map((v) => [v.player_name, v.player_id]));
+    results = { ...(row.team_mode ? pods.setTeamMode(results, true) : results), matches: [], playerIds, computedAt: new Date().toISOString() };
     await matches.clear(client, s.id);
     await client.query("UPDATE sessions SET results = $2, status = 'assigned', assigned_at = now() WHERE id = $1", [s.id, await matches.store(client, s.id, results)]);
   });
@@ -454,7 +463,9 @@ router.delete('/admin/:adminToken/voters/:voteId', wrap(async (req, res) => {
   const voteId = Number(req.params.voteId);
   if (!Number.isInteger(voteId)) throw new HttpError(400, 'Invalid voter');
   // Once pods are assigned, removing a voter takes them out of the pods and keeps everyone else's seats and results.
-  if (s.status === 'assigned' && s.results) {
+  // The status is read fresh, since s may be from before an assignment that just finished.
+  const { rows: [now] } = await pool.query('SELECT status, results IS NOT NULL AS has_results FROM sessions WHERE id = $1', [s.id]);
+  if (now && now.status === 'assigned' && now.has_results) {
     await editResults(s, async (results, row, client) => {
       const del = await client.query('DELETE FROM votes WHERE id = $1 AND session_id = $2 RETURNING player_name', [voteId, s.id]);
       if (!del.rowCount) return results;
@@ -465,8 +476,12 @@ router.delete('/admin/:adminToken/voters/:voteId', wrap(async (req, res) => {
     });
     return sendView(req, res);
   }
-  const del = await pool.query('DELETE FROM votes WHERE id = $1 AND session_id = $2', [voteId, s.id]);
-  if (del.rowCount) await inTransaction((client) => clearResults(client, s.id));
+  await inTransaction(async (client) => {
+    const { rows: [locked] } = await client.query('SELECT status FROM sessions WHERE id = $1 FOR UPDATE', [s.id]);
+    if (locked.status === 'assigned') throw new HttpError(409, 'Pods were just assigned. Reload and try again.');
+    const del = await client.query('DELETE FROM votes WHERE id = $1 AND session_id = $2', [voteId, s.id]);
+    if (del.rowCount) await clearResults(client, s.id);
+  });
   await sendView(req, res);
 }));
 
@@ -493,8 +508,11 @@ router.post('/admin/:adminToken/vote', wrap(async (req, res) => {
 // "I'm not playing": removes the admin's ballot if there is one.
 router.delete('/admin/:adminToken/ballot', wrap(async (req, res) => {
   const s = await sessionByAdminToken(req.params.adminToken);
-  const del = await pool.query('DELETE FROM votes WHERE session_id = $1 AND token_hash = $2', [s.id, sha256(adminVoterToken(s.admin_token))]);
-  if (del.rowCount) await inTransaction((client) => clearResults(client, s.id));
+  await inTransaction(async (client) => {
+    await client.query('SELECT 1 FROM sessions WHERE id = $1 FOR UPDATE', [s.id]);
+    const del = await client.query('DELETE FROM votes WHERE session_id = $1 AND token_hash = $2', [s.id, sha256(adminVoterToken(s.admin_token))]);
+    if (del.rowCount) await clearResults(client, s.id);
+  });
   await sendView(req, res);
 }));
 
@@ -510,10 +528,9 @@ router.put('/admin/:adminToken/cubes', wrap(async (req, res) => {
   const s = await sessionByAdminToken(req.params.adminToken);
   const input = req.body.cubes;
   const cubes = await resolveCubeList(input, 'A session needs at least one cube');
+  const overwrite = await owner.isOwner(req); // before the transaction: it uses the pool
 
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
+  await inTransaction(async (client) => {
     await client.query('SELECT id FROM sessions WHERE id = $1 FOR UPDATE', [s.id]);
     const { rows: existing } = await client.query('SELECT id FROM cubes WHERE session_id = $1', [s.id]);
     const existingIds = new Set(existing.map((c) => c.id));
@@ -546,22 +563,18 @@ router.put('/admin/:adminToken/cubes', wrap(async (req, res) => {
     if (removed.length) await client.query('DELETE FROM cubes WHERE id = ANY($1::int[])', [removed]);
 
     if (removed.length || added.length) {
-      const { rows: votes } = await client.query('SELECT id, preferences FROM votes WHERE session_id = $1', [s.id]);
-      const gone = new Set(removed);
-      for (const v of votes) {
-        const prefs = [...v.preferences.filter((id) => !gone.has(id)), ...added];
-        await client.query('UPDATE votes SET preferences = $2 WHERE id = $1', [v.id, JSON.stringify(prefs)]);
-      }
+      // One statement for every ballot: drop removed cubes (keeping the order), then add new ones at the bottom.
+      await client.query(
+        `UPDATE votes v SET preferences = COALESCE(
+           (SELECT jsonb_agg(e ORDER BY ord) FROM jsonb_array_elements(v.preferences) WITH ORDINALITY AS t(e, ord)
+            WHERE NOT ((e)::int = ANY($2::int[]))), '[]'::jsonb) || $3::jsonb
+         WHERE session_id = $1`,
+        [s.id, removed, JSON.stringify(added)]
+      );
       await clearResults(client, s.id);
     }
-    await saveToLibrary(client, cubes);
-    await client.query('COMMIT');
-  } catch (err) {
-    await client.query('ROLLBACK').catch(() => {});
-    throw err;
-  } finally {
-    client.release();
-  }
+    await saveToLibrary(client, cubes, { overwrite });
+  });
   await sendView(req, res);
 }));
 
@@ -572,9 +585,7 @@ router.put('/admin/:adminToken/cubes', wrap(async (req, res) => {
  * lock and saves what it returns.
  */
 async function editResults(s, fn) {
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
+  return inTransaction(async (client) => {
     const { rows } = await client.query('SELECT * FROM sessions WHERE id = $1 FOR UPDATE', [s.id]);
     const row = rows[0];
     if (row.status !== 'assigned' || !row.results) throw new HttpError(409, 'Assign pods first');
@@ -587,36 +598,22 @@ async function editResults(s, fn) {
       throw err;
     }
     await client.query('UPDATE sessions SET results = $2 WHERE id = $1', [s.id, await matches.store(client, s.id, next)]);
-    await client.query('COMMIT');
     return next;
-  } catch (err) {
-    await client.query('ROLLBACK').catch(() => {});
-    throw err;
-  } finally {
-    client.release();
-  }
+  });
 }
 
 // Turning team draft on or off re-splits (or un-splits) any assigned pods and clears their matches.
 router.put('/admin/:adminToken/team-mode', wrap(async (req, res) => {
   const s = await sessionByAdminToken(req.params.adminToken);
   const on = req.body.teamMode === true;
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
+  await inTransaction(async (client) => {
     const { rows } = await client.query('SELECT team_mode, results FROM sessions WHERE id = $1 FOR UPDATE', [s.id]);
     if (rows[0].team_mode !== on) {
       await matches.clear(client, s.id);
       const results = rows[0].results ? await matches.store(client, s.id, pods.setTeamMode(rows[0].results, on)) : null;
       await client.query('UPDATE sessions SET team_mode = $2, results = $3 WHERE id = $1', [s.id, on, results]);
     }
-    await client.query('COMMIT');
-  } catch (err) {
-    await client.query('ROLLBACK').catch(() => {});
-    throw err;
-  } finally {
-    client.release();
-  }
+  });
   await sendView(req, res);
 }));
 
@@ -652,9 +649,7 @@ router.post('/admin/:adminToken/players/rename', wrap(async (req, res) => {
   const s = await sessionByAdminToken(req.params.adminToken);
   const from = String(req.body.from || '');
   const to = cleanText(req.body.to, 40, 'New name', { required: true });
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
+  await inTransaction(async (client) => {
     const { rows } = await client.query('SELECT id, results FROM sessions WHERE id = $1 FOR UPDATE', [s.id]);
     await matches.hydrate(client, rows);
     const { rows: votes } = await client.query('SELECT id, player_name FROM votes WHERE session_id = $1', [s.id]);
@@ -683,13 +678,7 @@ router.post('/admin/:adminToken/players/rename', wrap(async (req, res) => {
     }
     if (ballot) await client.query('UPDATE votes SET player_name = $2 WHERE id = $1', [ballot.id, to]);
     await client.query('UPDATE draft_decks SET player_name = $3, updated_at = now() WHERE draft_id = $1 AND player_name = $2', [s.id, from, to]);
-    await client.query('COMMIT');
-  } catch (err) {
-    await client.query('ROLLBACK').catch(() => {});
-    throw err;
-  } finally {
-    client.release();
-  }
+  });
   await sendView(req, res);
 }));
 
@@ -832,7 +821,7 @@ async function matchById(s, id) {
  * Discord login, or else the ballot their browser holds the edit token for
  * (X-Voter-Token). Returns { name, cubeId, playerId } or null.
  */
-async function mySeat(req, s, results, db = pool) {
+async function mySeat(req, s, results, db = pool, me = undefined) {
   if (!results || !results.pods) return null;
   const { rows: votes } = await db.query('SELECT player_name, player_id, token_hash FROM votes WHERE session_id = $1', [s.id]);
   const linked = records.linkedNames(results, votes.filter((v) => v.player_id !== null));
@@ -840,7 +829,8 @@ async function mySeat(req, s, results, db = pool) {
     const pod = results.pods.find((p) => p.players.some((x) => x.name === name));
     return pod ? { name, cubeId: pod.cubeId, playerId: linked.get(name) ?? null } : null;
   };
-  const me = await discord.currentPlayer(req);
+  // Inside a transaction the caller passes `me` in, since looking it up here would take a second pool connection.
+  if (me === undefined) me = await discord.currentPlayer(req);
   if (me) {
     for (const [name, id] of linked) if (id === me.id && seat(name)) return seat(name);
   }
@@ -867,9 +857,10 @@ router.post('/drafts/:id/matches', wrap(async (req, res) => {
   const round = Number(req.body.round);
   const score = { w1: req.body.wins, w2: req.body.losses, d: req.body.draws };
   let savedId = null;
+  const me = await discord.currentPlayer(req); // before the lock, see inTransaction
 
   await editResults(s, async (results, row, client) => {
-    const seat = await mySeat(req, s, results, client);
+    const seat = await mySeat(req, s, results, client, me);
     if (!seat) throw new HttpError(403, NOT_SEATED);
     const name = seat.name;
     if (opponent === name) throw new HttpError(400, 'Pick your opponent');
@@ -1122,7 +1113,7 @@ router.get('/library', wrap(async (req, res) => {
 router.post('/library', wrap(async (req, res) => {
   await requireOwner(req);
   const cube = await resolveCube({ ...(req.body || {}), save: true }, 0, 'Cube');
-  await saveToLibrary(pool, [cube]);
+  await saveToLibrary(pool, [cube], { overwrite: true });
   const { rows } = await pool.query('SELECT * FROM saved_cubes WHERE cubecobra_id = $1', [cube.cubecobraId]);
   res.status(201).json({ cube: savedCubeDto(rows[0]) });
 }));
@@ -1174,9 +1165,9 @@ async function assignedSessions(db = pool, { ids = null, lock = false } = {}) {
 }
 
 /** Every draft with pods that involves one of these players, as [{ session, entry, playerId }]. */
-async function draftEntries(playerId = null) {
+async function draftEntries(playerId = null, sessions = null) {
   const out = [];
-  for (const s of await assignedSessions()) {
+  for (const s of sessions || await assignedSessions()) {
     for (const [name, id] of records.linkedNames(s.results, s.votes)) {
       if (playerId !== null && id !== playerId) continue;
       const entry = records.draftEntry(s.results, name, s.team_mode);
@@ -1196,10 +1187,10 @@ async function livePlayerIds(db = pool) {
   return (id) => ids.has(id);
 }
 
-async function unclaimedEntries(key = null) {
+async function unclaimedEntries(key = null, sessions = null) {
   const out = [];
   const isLive = await livePlayerIds();
-  for (const s of await assignedSessions()) {
+  for (const s of sessions || await assignedSessions()) {
     for (const name of records.unlinkedNames(s.results, s.votes, isLive)) {
       const k = records.nameKey(name);
       if (!k || (key !== null && k !== key)) continue;
@@ -1244,9 +1235,10 @@ router.delete('/me', wrap(async (req, res) => {
 router.get('/players', wrap(async (req, res) => {
   const { rows } = await pool.query('SELECT * FROM players ORDER BY lower(display_name), id');
   const byPlayer = new Map(rows.map((p) => [p.id, []]));
-  for (const { entry, playerId } of await draftEntries()) if (byPlayer.has(playerId)) byPlayer.get(playerId).push(entry);
+  const sessions = await assignedSessions(); // read once, used for both lists
+  for (const { entry, playerId } of await draftEntries(null, sessions)) if (byPlayer.has(playerId)) byPlayer.get(playerId).push(entry);
   const byName = new Map();
-  for (const { entry, key } of await unclaimedEntries()) {
+  for (const { entry, key } of await unclaimedEntries(null, sessions)) {
     if (!byName.has(key)) byName.set(key, { name: entry.name, entries: [] });
     byName.get(key).entries.push(entry);
   }
@@ -1292,11 +1284,9 @@ router.post('/players/name/:name/claim', wrap(async (req, res) => {
   if (!key) throw new HttpError(400, 'Invalid name');
   if (ids && !ids.length) throw new HttpError(400, 'Pick at least one draft to claim');
 
-  const client = await pool.connect();
   const claimed = [];
   const skipped = [];
-  try {
-    await client.query('BEGIN');
+  await inTransaction(async (client) => {
     const isLive = await livePlayerIds(client);
     for (const s of await assignedSessions(client, { ids, lock: true })) {
       const name = records.unlinkedNames(s.results, s.votes, isLive).find((n) => records.nameKey(n) === key);
@@ -1312,13 +1302,7 @@ router.post('/players/name/:name/claim', wrap(async (req, res) => {
       await client.query('UPDATE draft_decks SET player_id = $3 WHERE draft_id = $1 AND player_name = $2', [s.id, name, me.id]);
       claimed.push(s.title);
     }
-    await client.query('COMMIT');
-  } catch (err) {
-    await client.query('ROLLBACK').catch(() => {});
-    throw err;
-  } finally {
-    client.release();
-  }
+  });
   if (!claimed.length && !skipped.length) throw new HttpError(404, 'Those drafts are no longer unclaimed');
   res.json({ claimed, skipped, playerId: me.id });
 }));
@@ -1348,9 +1332,7 @@ router.post('/players/:id/unlink', wrap(async (req, res) => {
   const id = Number(req.params.id);
   const sessionId = Number(req.body.sessionId);
   if (!Number.isInteger(id) || !Number.isInteger(sessionId)) throw new HttpError(400, 'Invalid player or draft');
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
+  await inTransaction(async (client) => {
     const { rows } = await client.query('SELECT id, results FROM sessions WHERE id = $1 FOR UPDATE', [sessionId]);
     if (!rows[0]) throw new HttpError(404, 'That draft no longer exists');
     await matches.hydrate(client, rows);
@@ -1359,13 +1341,7 @@ router.post('/players/:id/unlink', wrap(async (req, res) => {
       await client.query('UPDATE sessions SET results = $2 WHERE id = $1', [sessionId, await matches.store(client, sessionId, records.unlinkPlayer(rows[0].results, id))]);
     }
     await client.query('UPDATE draft_decks SET player_id = NULL WHERE draft_id = $1 AND player_id = $2', [sessionId, id]);
-    await client.query('COMMIT');
-  } catch (err) {
-    await client.query('ROLLBACK').catch(() => {});
-    throw err;
-  } finally {
-    client.release();
-  }
+  });
   res.json({ success: true });
 }));
 
@@ -1433,6 +1409,12 @@ router.use((err, req, res, next) => {
   if (err instanceof HttpError) return res.status(err.status).json({ error: err.message, code: err.code });
   if (err.type === 'entity.parse.failed') return res.status(400).json({ error: 'Invalid JSON' });
   if (err.type === 'entity.too.large') return res.status(413).json({ error: 'That upload is too large' });
+  // Lock wait timed out, query timed out, deadlock, or no free database connection: the server is busy, not broken.
+  if (['55P03', '57014', '40P01'].includes(err.code) || /timeout exceeded when trying to connect/i.test(err.message || '')) {
+    console.error('Database busy:', err.code || err.message);
+    res.set('Retry-After', '2');
+    return res.status(503).json({ error: 'The server is busy. Try again in a moment.' });
+  }
   console.error(err);
   res.status(500).json({ error: 'Something went wrong on the server' });
 });

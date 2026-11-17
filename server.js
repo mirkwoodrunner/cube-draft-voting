@@ -5,9 +5,27 @@ const express = require('express');
 const { pool, migrate } = require('./src/db');
 const { router } = require('./src/routes');
 const discord = require('./src/discord');
+const { rateLimit } = require('./src/ratelimit');
 
 const app = express();
 app.disable('x-powered-by');
+// Render sits in front of the app, so req.ip comes from X-Forwarded-For. TRUST_PROXY is the number of proxies.
+const hops = Number(process.env.TRUST_PROXY);
+app.set('trust proxy', Number.isInteger(hops) && hops >= 0 && process.env.TRUST_PROXY !== '' ? hops : 1);
+
+// Limits are per IP and generous, since players at one store often share an IP.
+const MIN = 60 * 1000;
+const onPost = (limiter) => (req, res, next) => (req.method === 'POST' ? limiter(req, res, next) : next());
+const onPut = (limiter) => (req, res, next) => (req.method === 'PUT' ? limiter(req, res, next) : next());
+app.use('/api/owner/login', rateLimit({ windowMs: 15 * MIN, limit: 10, onlyFailures: true, message: 'Too many wrong passwords. Wait 15 minutes and try again.' }));
+const creating = rateLimit({ windowMs: 10 * MIN, limit: 30 });
+app.post('/api/sessions', creating);
+app.use('/api/cubecobra/preview', onPost(creating));
+app.use('/api/sessions/:sessionId/vote', onPost(rateLimit({ windowMs: MIN, limit: 60 })));
+const uploads = rateLimit({ windowMs: 10 * MIN, limit: 60 });
+app.use('/api/drafts/:id/decks/mine/photo', onPut(uploads));
+app.use('/api/admin/:adminToken/decks/photo', onPut(uploads));
+
 app.use(express.json({ limit: '100kb' }));
 app.use('/api', router);
 

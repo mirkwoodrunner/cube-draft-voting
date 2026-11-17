@@ -7,8 +7,16 @@ const isLocal = /@(localhost|127\.0\.0\.1)[:/]/.test(url);
 
 const pool = new Pool({
   connectionString: url,
-  ssl: isLocal ? false : { rejectUnauthorized: false }
+  // Checks the server's certificate. An sslmode in DATABASE_URL takes precedence over this.
+  ssl: isLocal ? false : true,
+  max: Number(process.env.PG_POOL_MAX) || 10,
+  // Waiting for a free connection fails after 5 seconds instead of hanging forever.
+  connectionTimeoutMillis: 5000,
+  idleTimeoutMillis: 30000
 });
+
+// Neon closes idle connections. Without a listener, that error would crash the process.
+pool.on('error', (err) => console.error('Idle database connection error:', err.message));
 
 /**
  * Creates the tables on a fresh database and upgrades tables from the first
@@ -164,6 +172,11 @@ async function migrate() {
     ALTER TABLE draft_decks ADD COLUMN IF NOT EXISTS notes TEXT;
     ALTER TABLE draft_decks ADD COLUMN IF NOT EXISTS match_notes JSONB NOT NULL DEFAULT '{}';
     ALTER TABLE draft_decks ADD COLUMN IF NOT EXISTS posted_at TIMESTAMPTZ;
+
+    -- Postgres does not index foreign keys on its own.
+    CREATE INDEX IF NOT EXISTS cubes_session_idx ON cubes(session_id);
+    CREATE INDEX IF NOT EXISTS player_logins_player_idx ON player_logins(player_id);
+    CREATE INDEX IF NOT EXISTS player_logins_expires_idx ON player_logins(expires_at);
   `);
 }
 

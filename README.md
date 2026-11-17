@@ -67,7 +67,7 @@ Switching the format after pods are assigned re-splits or removes the teams and 
 
 ### Cube library
 
-Every cube has a "Save to my cube library" box. It is ticked by default for new cubes and for cubes picked from the library. A cube already in a draft but not in the library starts unticked in the cube editor. Saving happens when the draft is created or its cubes are saved. Saved cubes show up in an "Add a saved cube" picker on the create page and the cube editor. Saving the same cube again updates its saved details.
+Every cube has a "Save to my cube library" box. It is ticked by default for new cubes and for cubes picked from the library. A cube already in a draft but not in the library starts unticked in the cube editor. Saving happens when the draft is created or its cubes are saved. Saved cubes show up in an "Add a saved cube" picker on the create page and the cube editor. Saving a cube that is already in the library updates its saved details only when the owner is logged in. For anyone else it keeps the saved details as they are.
 
 The owner can also add a cube straight to the library from the owner page without making a draft, edit a saved cube's name, author, card count and player range, and remove saved cubes there. The Cube Cobra link can't be edited, since it identifies the cube. Add the new link as a new cube instead. Removing asks for confirmation first. Editing or removing a cube in the library does not change drafts that already use it. Only the owner can add, edit or remove cubes this way.
 
@@ -168,6 +168,8 @@ DATABASE_URL=postgres://... npm start
 npm test
 ```
 
+`npm test` skips the database tests unless `TEST_DATABASE_URL` points at a throwaway Postgres database. They start the real server and write to that database.
+
 Tables are created or upgraded automatically on startup. Existing sessions from the first version are kept but have no admin or voting link.
 
 | Variable | Purpose |
@@ -183,6 +185,8 @@ Tables are created or upgraded automatically on startup. Existing sessions from 
 | `DISCORD_WEBHOOK_URL` | Optional. Channel webhook that deck reports are posted to. Doesn't need Discord login on |
 | `DISCORD_REDIRECT_URI` | Optional. Defaults to `/auth/discord/callback` on the host the request came in on |
 | `CUBECOBRA_BASE_URL` | Override for tests. Defaults to `https://cubecobra.com` |
+| `TRUST_PROXY` | Number of proxies in front of the app, used to find each visitor's IP for rate limits. Defaults to 1 |
+| `PG_POOL_MAX` | Most database connections at once. Defaults to 10 |
 
 ## Layout
 
